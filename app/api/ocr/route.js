@@ -1,9 +1,16 @@
 import { NextResponse } from 'next/server'
+import { createClient } from '@supabase/supabase-js'
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+)
 
 export async function POST(request) {
   try {
     const formData = await request.formData()
     const file = formData.get('document')
+    const originalFileName = formData.get('originalFileName')
     
     if (!file) {
       return NextResponse.json(
@@ -12,12 +19,10 @@ export async function POST(request) {
       )
     }
 
-    console.log('=== 파일 정보 ===')
+    console.log('=== OCR 시작 ===')
     console.log('파일명:', file.name)
-    console.log('타입:', file.type)
-    console.log('크기:', file.size)
 
-    // Upstage API로 전송
+    // 1. Upstage OCR
     const upstageFormData = new FormData()
     upstageFormData.append('document', file)
 
@@ -29,11 +34,7 @@ export async function POST(request) {
       body: upstageFormData
     })
 
-    console.log('=== Upstage 응답 ===')
-    console.log('상태:', response.status)
-    
     const responseText = await response.text()
-    console.log('응답 전체:', responseText)
     
     if (!response.ok) {
       throw new Error(`API 에러 (${response.status}): ${responseText}`)
@@ -41,31 +42,52 @@ export async function POST(request) {
 
     const data = JSON.parse(responseText)
     
-    // 응답 구조 확인용 - 전체 출력
-    console.log('=== 파싱된 데이터 구조 ===')
-    console.log(JSON.stringify(data, null, 2))
-    
-    // 다양한 경로로 텍스트 찾기
     const extractedText = 
-      data.content?.text ||           // 경로 1
-      data.text ||                     // 경로 2
-      data.content?.html ||            // 경로 3
-      data.html ||                     // 경로 4
-      data.elements?.[0]?.text ||     // 경로 5
-      JSON.stringify(data)             // 마지막: 전체 데이터
+      data.content?.text ||
+      data.text ||
+      data.content?.html ||
+      data.html ||
+      JSON.stringify(data)
     
-    console.log('=== 추출된 텍스트 ===')
-    console.log(extractedText.substring(0, 200))
+    console.log('OCR 완료! 텍스트 길이:', extractedText.length)
+
+    // 2. 텍스트를 UTF-8 txt 파일로 저장
+    const timestamp = Date.now()
+    const txtFileName = `${timestamp}.txt`
+    
+    // UTF-8 Blob 생성 (한글 깨짐 방지)
+    const textBlob = new Blob([extractedText], { 
+      type: 'text/plain; charset=utf-8' 
+    })
+
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('documents')
+      .upload(txtFileName, textBlob, {
+        contentType: 'text/plain; charset=utf-8',
+        cacheControl: '3600',
+      })
+
+    if (uploadError) {
+      console.error('텍스트 저장 실패:', uploadError)
+    } else {
+      console.log('텍스트 파일 저장 완료:', txtFileName)
+    }
+
+    // 3. txt 파일 URL 생성
+    const { data: txtUrlData } = supabase.storage
+      .from('documents')
+      .getPublicUrl(txtFileName)
     
     return NextResponse.json({
       success: true,
       text: extractedText,
-      rawData: data  // 전체 응답도 같이 보냄
+      txtFileUrl: txtUrlData?.publicUrl,
+      txtFileName: txtFileName,
+      rawData: data
     })
     
   } catch (error) {
-    console.error('=== OCR 에러 ===')
-    console.error(error)
+    console.error('OCR 에러:', error)
     return NextResponse.json(
       { error: error.message },
       { status: 500 }
