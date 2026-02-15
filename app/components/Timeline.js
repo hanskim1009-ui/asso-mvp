@@ -62,9 +62,16 @@ export default function Timeline({ events }) {
                       )}
                     </div>
                     {event.source && (
-                      <span className="text-xs bg-zinc-100 text-zinc-700 px-2 py-1 rounded">
-                        {event.source}
-                      </span>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs bg-zinc-100 text-zinc-700 px-2 py-1 rounded">
+                          📄 {event.source}
+                        </span>
+                        {event.page && (
+                          <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs font-medium">
+                            p.{event.page}
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
                   <p className="text-zinc-700">

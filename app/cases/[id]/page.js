@@ -52,6 +52,8 @@ export default function CaseDetailPage() {
   })
   const [toast, setToast] = useState(null)
   const [confirmDialog, setConfirmDialog] = useState(null)
+  const [editingAnalysisId, setEditingAnalysisId] = useState(null)
+  const [editingTitle, setEditingTitle] = useState('')
   const fileInputRef = useRef(null)
 
   useEffect(() => {
@@ -84,6 +86,77 @@ export default function CaseDetailPage() {
       setToast({ message: '사건 로드 실패: ' + err.message, type: 'error' })
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleDeleteDocument(documentId) {
+    if (!confirm('이 문서를 삭제하시겠습니까?')) return
+
+    try {
+      const res = await fetch(`/api/documents/${documentId}`, {
+        method: 'DELETE'
+      })
+
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || 'Delete failed')
+      }
+
+      await loadCase()
+      setToast({ message: '문서가 삭제되었습니다.', type: 'success' })
+    } catch (error) {
+      console.error('문서 삭제 오류:', error)
+      alert(`문서 삭제 실패: ${error.message}`)
+    }
+  }
+
+  async function handleDeleteAnalysis(analysisId) {
+    if (!confirm('이 분석 결과를 삭제하시겠습니까?')) return
+
+    try {
+      const res = await fetch(`/api/analysis/${analysisId}`, {
+        method: 'DELETE'
+      })
+
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || '삭제 실패')
+
+      await loadCase()
+
+      if (selectedAnalysis?.id === analysisId) {
+        setSelectedAnalysis(null)
+      }
+
+      setToast({ message: '분석 결과가 삭제되었습니다.', type: 'success' })
+    } catch (error) {
+      console.error('분석 삭제 오류:', error)
+      alert(`삭제 실패: ${error.message}`)
+    }
+  }
+
+  async function handleSaveTitle() {
+    if (!editingTitle.trim()) {
+      alert('제목을 입력해주세요.')
+      return
+    }
+
+    try {
+      const res = await fetch(`/api/analysis/${editingAnalysisId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: editingTitle.trim() })
+      })
+
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || '수정 실패')
+
+      await loadCase()
+      setEditingAnalysisId(null)
+      setEditingTitle('')
+      setToast({ message: '제목이 수정되었습니다.', type: 'success' })
+    } catch (error) {
+      console.error('제목 수정 오류:', error)
+      alert(`수정 실패: ${error.message}`)
     }
   }
 
@@ -578,41 +651,54 @@ export default function CaseDetailPage() {
               <>
                 <div className="space-y-2 mb-4">
                   {caseData.documents.map((doc) => (
-                    <label
+                    <div
                       key={doc.id}
-                      className="flex items-center p-4 border rounded-lg hover:shadow cursor-pointer"
+                      className="flex items-center justify-between p-3 bg-white border rounded hover:bg-zinc-50"
                     >
-                      <input
-                        type="checkbox"
-                        checked={selectedDocs.includes(doc.id)}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedDocs([...selectedDocs, doc.id])
-                          } else {
-                            setSelectedDocs(
-                              selectedDocs.filter((id) => id !== doc.id)
-                            )
-                          }
-                        }}
-                        className="mr-4 w-5 h-5"
-                      />
-                      <div className="flex-1">
-                        <h3 className="font-medium">{doc.original_file_name}</h3>
-                        <p className="text-xs text-zinc-500 mt-1">
-                          업로드:{' '}
-                          {new Date(doc.created_at).toLocaleString('ko-KR')}
-                        </p>
+                      <label className="flex items-center gap-3 flex-1 cursor-pointer min-w-0">
+                        <input
+                          type="checkbox"
+                          checked={selectedDocs.includes(doc.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedDocs([...selectedDocs, doc.id])
+                            } else {
+                              setSelectedDocs(
+                                selectedDocs.filter((id) => id !== doc.id)
+                              )
+                            }
+                          }}
+                          className="w-5 h-5 shrink-0"
+                        />
+                        <span className="text-2xl shrink-0">📄</span>
+                        <div className="min-w-0">
+                          <div className="font-medium truncate">
+                            {doc.original_file_name}
+                          </div>
+                          <div className="text-sm text-zinc-500">
+                            업로드:{' '}
+                            {new Date(doc.upload_date || doc.created_at).toLocaleString('ko-KR')}
+                          </div>
+                        </div>
+                      </label>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <a
+                          href={doc.pdf_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-3 py-1.5 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
+                        >
+                          PDF 보기
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteDocument(doc.id)}
+                          className="px-3 py-1.5 text-sm bg-red-100 text-red-700 rounded hover:bg-red-200 flex items-center gap-1"
+                        >
+                          🗑️ 삭제
+                        </button>
                       </div>
-                      <a
-                        href={doc.pdf_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="px-3 py-1 text-sm border border-blue-600 text-blue-600 rounded hover:bg-blue-50"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        PDF 보기
-                      </a>
-                    </label>
+                    </div>
                   ))}
                 </div>
 
@@ -692,38 +778,88 @@ export default function CaseDetailPage() {
                 </h3>
                 <div className="space-y-2">
                   {analysisHistory.map((analysis, idx) => (
-                    <button
-                      key={analysis.id}
-                      onClick={() => setSelectedAnalysis(analysis)}
-                      className={`w-full text-left p-3 rounded-md transition-colors ${
-                        selectedAnalysis?.id === analysis.id
-                          ? 'bg-blue-100 border-2 border-blue-500'
-                          : 'bg-white border border-zinc-200 hover:bg-zinc-50'
-                      }`}
-                    >
-                      <div className="flex justify-between items-center">
-                        <div>
-                          <span className="font-medium">
-                            {idx === 0
-                              ? '🆕 최신 분석'
-                              : `분석 ${analysisHistory.length - idx}`}
-                          </span>
-                          <span className="text-xs text-zinc-500 ml-3">
-                            {new Date(
-                              analysis.created_at
-                            ).toLocaleString('ko-KR')}
-                          </span>
+                    <div key={analysis.id} className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedAnalysis(analysis)}
+                        className={`flex-1 text-left px-4 py-3 rounded-lg border transition-colors ${
+                          selectedAnalysis?.id === analysis.id
+                            ? 'bg-blue-50 border-blue-500'
+                            : 'bg-white border border-zinc-200 hover:border-blue-300'
+                        }`}
+                      >
+                        <div className="font-medium">
+                          {analysis.title || (idx === 0 ? '🆕 최신 분석' : `분석 ${analysisHistory.length - idx}`)}
+                        </div>
+                        <div className="text-sm text-zinc-500">
+                          {new Date(
+                            analysis.created_at
+                          ).toLocaleString('ko-KR')}
                         </div>
                         {selectedAnalysis?.id === analysis.id && (
-                          <span className="text-sm text-blue-600 font-medium">
+                          <span className="text-sm text-blue-600 font-medium mt-1 block">
                             ✓
                           </span>
                         )}
-                      </div>
-                    </button>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingAnalysisId(analysis.id)
+                          setEditingTitle(analysis.title || '')
+                        }}
+                        className="px-3 py-3 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                        title="제목 수정"
+                      >
+                        ✏️
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteAnalysis(analysis.id)}
+                        className="px-3 py-3 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                        title="분석 결과 삭제"
+                      >
+                        🗑️
+                      </button>
+                    </div>
                   ))}
                 </div>
               </div>
+
+              {editingAnalysisId && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                  <div className="bg-white rounded-lg p-6 w-full max-w-md">
+                    <h3 className="text-lg font-semibold mb-4">분석 제목 수정</h3>
+                    <input
+                      type="text"
+                      value={editingTitle}
+                      onChange={(e) => setEditingTitle(e.target.value)}
+                      className="w-full px-4 py-2 border rounded-lg mb-4"
+                      placeholder="분석 제목을 입력하세요"
+                      autoFocus
+                    />
+                    <div className="flex gap-2 justify-end">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingAnalysisId(null)
+                          setEditingTitle('')
+                        }}
+                        className="px-4 py-2 text-zinc-600 hover:bg-zinc-100 rounded-lg"
+                      >
+                        취소
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSaveTitle}
+                        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                      >
+                        저장
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {selectedAnalysis && (
                 <div className="p-6 bg-white border rounded-lg shadow-sm">

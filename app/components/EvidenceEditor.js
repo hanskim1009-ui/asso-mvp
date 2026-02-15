@@ -41,13 +41,20 @@ export default function EvidenceEditor({ evidence = [], onChange }) {
             <option value="서증">서증</option>
           </select>
 
-          <input
-            type="text"
-            value={item.description}
-            onChange={(e) => updateItem(idx, 'description', e.target.value)}
-            placeholder="증거 설명"
-            className="flex-1 px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
+          <div className="flex-1 flex flex-col">
+            <input
+              type="text"
+              value={item.description}
+              onChange={(e) => updateItem(idx, 'description', e.target.value)}
+              placeholder="증거 설명"
+              className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            {item.page && (
+              <div className="text-xs text-blue-600 mt-1">
+                📄 p.{item.page}
+              </div>
+            )}
+          </div>
 
           <button
             onClick={() => removeItem(idx)}

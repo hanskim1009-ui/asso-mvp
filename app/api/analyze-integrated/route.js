@@ -76,16 +76,35 @@ export async function POST(request) {
 
 {{TEXT}}
 
+**중요: 모든 타임라인 이벤트와 증거에는 반드시 페이지 번호를 포함해야 합니다.**
+
+텍스트에서 <footer> 태그의 숫자를 페이지 번호로 사용하세요.
+예시:
+- <footer id='52' style='font-size:22px'>19.</footer> → page: 19
+- <footer id='87' style='font-size:22px'>200</footer> → page: 200
+
 반환 형식 (JSON만):
 {
-  "summary": "사건 전체 요약 (3-5문장)",
-  "issues": ["쟁점1", "쟁점2", ...],
-  "evidence": [
-    {"type": "물증/인증/서증", "description": "증거 설명"}
-  ],
-  "favorable_facts": ["피고인에게 유리한 정황1", ...],
+  "summary": "사건 요약",
+  "issues": ["쟁점1", "쟁점2"],
   "timeline": [
-    {"date": "YYYY-MM-DD", "event": "이벤트", "source": "출처"}
+    {
+      "date": "2026-02-03",
+      "event": "이벤트 설명",
+      "source": "문서명",
+      "page": 19
+    }
+  ],
+  "evidence": [
+    {
+      "type": "물증/인증/서증",
+      "description": "증거 설명",
+      "page": 12
+    }
+  ],
+  "favorable_facts": [
+    "유리한 정황 1",
+    "유리한 정황 2"
   ],
   "contradictions": [
     {
@@ -94,7 +113,9 @@ export async function POST(request) {
       "analysis": "모순 분석"
     }
   ]
-}`
+}
+
+**모든 timeline과 evidence 항목에 page 필드가 필수입니다!**`
 
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
@@ -109,7 +130,13 @@ export async function POST(request) {
     })
 
     const text = result.response.text()
+    console.log('=== AI 원본 응답 ===')
+    console.log(text.substring(0, 500))
+
     const cleanText = text.replace(/```json|```/g, '').trim()
+    console.log('=== 정제된 응답 ===')
+    console.log(cleanText.substring(0, 500))
+    
     const analysis = JSON.parse(cleanText)
 
     if (caseId && documentIds?.length > 0) {
