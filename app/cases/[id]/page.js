@@ -297,35 +297,51 @@ export default function CaseDetailPage() {
     await analyzeSelected(allIds)
   }
 
-  async function refineAnalysis(prompt) {
-    if (!prompt || isRefining || !selectedAnalysis) return
+  async function handleRefineWithAI(promptOverride) {
+    const refinementRequest = promptOverride ?? refinementPrompt
+    if (!refinementRequest.trim()) {
+      alert('수정 요청사항을 입력해주세요.')
+      return
+    }
+    if (!selectedAnalysis) return
 
     setIsRefining(true)
     try {
+      // 1. AI에게 수정 요청
       const res = await fetch('/api/refine', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           currentAnalysis: selectedAnalysis.result,
-          refinementRequest: prompt,
-          originalText: '',
-        }),
+          refinementRequest,
+          originalText: ''
+        })
       })
 
       const data = await res.json()
-      if (data.success) {
-        await updateAnalysisResult(
-          selectedAnalysis.id,
-          data.refinedAnalysis
-        )
-        setRefinementPrompt('')
-        setToast({ message: '수정 완료!', type: 'success' })
-        await loadCase()
-      } else {
-        throw new Error(data.error)
+
+      if (!res.ok) {
+        throw new Error(data.error || '수정 실패')
       }
-    } catch (err) {
-      setToast({ message: '수정 실패: ' + err.message, type: 'error' })
+
+      // 2. DB에 수정된 결과 저장
+      await updateAnalysisResult(selectedAnalysis.id, data.refinedAnalysis)
+
+      // 3. 화면 새로고침
+      await loadCase()
+
+      // 4. 같은 분석 다시 선택 (업데이트된 내용 보여주기)
+      setSelectedAnalysis((prev) =>
+        prev ? { ...prev, result: data.refinedAnalysis } : null
+      )
+      setEditedAnalysis(data.refinedAnalysis)
+
+      setRefinementPrompt('')
+      setEditingAnalysis(false)
+      alert('AI 수정이 완료되었습니다.')
+    } catch (error) {
+      console.error('AI 수정 오류:', error)
+      alert(`수정 실패: ${error.message}`)
     } finally {
       setIsRefining(false)
     }
@@ -1167,7 +1183,7 @@ export default function CaseDetailPage() {
                         <div className="flex flex-wrap gap-2 mb-3">
                           <button
                             onClick={() =>
-                              refineAnalysis(
+                              handleRefineWithAI(
                                 '타임라인을 더 자세하게 작성해줘'
                               )
                             }
@@ -1178,7 +1194,7 @@ export default function CaseDetailPage() {
                           </button>
                           <button
                             onClick={() =>
-                              refineAnalysis(
+                              handleRefineWithAI(
                                 '피고인에게 유리한 정황을 더 찾아줘'
                               )
                             }
@@ -1189,7 +1205,7 @@ export default function CaseDetailPage() {
                           </button>
                           <button
                             onClick={() =>
-                              refineAnalysis(
+                              handleRefineWithAI(
                                 '진술 간 모순점을 더 찾아줘'
                               )
                             }
@@ -1200,7 +1216,7 @@ export default function CaseDetailPage() {
                           </button>
                           <button
                             onClick={() =>
-                              refineAnalysis(
+                              handleRefineWithAI(
                                 '증거능력 문제를 더 분석해줘'
                               )
                             }
@@ -1221,7 +1237,7 @@ export default function CaseDetailPage() {
                               e.key === 'Enter' &&
                               !isRefining &&
                               refinementPrompt &&
-                              refineAnalysis(refinementPrompt)
+                              handleRefineWithAI(refinementPrompt)
                             }
                             placeholder="예: 양형 참작 사유를 더 자세히 분석해줘"
                             className="flex-1 p-2 border border-zinc-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -1229,7 +1245,7 @@ export default function CaseDetailPage() {
                           />
                           <button
                             onClick={() =>
-                              refineAnalysis(refinementPrompt)
+                              handleRefineWithAI(refinementPrompt)
                             }
                             disabled={isRefining || !refinementPrompt}
                             className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
