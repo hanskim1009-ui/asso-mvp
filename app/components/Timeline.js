@@ -77,6 +77,12 @@ export default function Timeline({ events }) {
                   <p className="text-zinc-700">
                     {event.event || event.event_description}
                   </p>
+                  {event.note && (
+                    <div className="mt-2 text-sm text-zinc-600 bg-blue-50/80 border-l-2 border-blue-200 pl-3 py-2 rounded-r">
+                      <span className="font-medium text-zinc-500">📝 메모</span>
+                      <p className="mt-0.5">{event.note}</p>
+                    </div>
+                  )}
                 </div>
               </div>
 

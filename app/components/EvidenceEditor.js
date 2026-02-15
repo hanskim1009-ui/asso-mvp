@@ -41,7 +41,7 @@ export default function EvidenceEditor({ evidence = [], onChange }) {
             <option value="서증">서증</option>
           </select>
 
-          <div className="flex-1 flex flex-col">
+          <div className="flex-1 flex flex-col gap-2">
             <input
               type="text"
               value={item.description}
@@ -50,10 +50,20 @@ export default function EvidenceEditor({ evidence = [], onChange }) {
               className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             {item.page && (
-              <div className="text-xs text-blue-600 mt-1">
+              <div className="text-xs text-blue-600">
                 📄 p.{item.page}
               </div>
             )}
+            <div>
+              <label className="block text-xs font-medium text-zinc-500 mb-1">메모 (선택)</label>
+              <input
+                type="text"
+                value={item.note || ''}
+                onChange={(e) => updateItem(idx, 'note', e.target.value)}
+                placeholder="이 증거에 대한 메모"
+                className="w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+              />
+            </div>
           </div>
 
           <button

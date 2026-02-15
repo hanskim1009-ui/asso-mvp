@@ -7,6 +7,7 @@ import {
   updateCase,
   getCaseAnalysisHistory,
   updateAnalysisResult,
+  saveIntegratedAnalysis,
   saveGoodExample,
   removeGoodExample,
   isGoodExample,
@@ -21,6 +22,9 @@ import ConfirmDialog from '@/app/components/ConfirmDialog'
 import EmptyState from '@/app/components/EmptyState'
 import EvidenceEditor from '@/app/components/EvidenceEditor'
 import TimelineEditor from '@/app/components/TimelineEditor'
+import AnalysisCompareView from '@/app/components/AnalysisCompareView'
+import ChunkViewer from '@/app/components/ChunkViewer'
+import EvidenceClassifier from '@/app/components/EvidenceClassifier'
 
 export default function CaseDetailPage() {
   const params = useParams()
@@ -54,6 +58,22 @@ export default function CaseDetailPage() {
   const [confirmDialog, setConfirmDialog] = useState(null)
   const [editingAnalysisId, setEditingAnalysisId] = useState(null)
   const [editingTitle, setEditingTitle] = useState('')
+  const [previousAnalysis, setPreviousAnalysis] = useState(null)
+  const [compareLeft, setCompareLeft] = useState(null)
+  const [compareRight, setCompareRight] = useState(null)
+  const [compareModalOpen, setCompareModalOpen] = useState(false)
+  const [compareSelectLeft, setCompareSelectLeft] = useState('')
+  const [compareSelectRight, setCompareSelectRight] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState([])
+  const [searchLoading, setSearchLoading] = useState(false)
+  const [chunkViewerOpen, setChunkViewerOpen] = useState(false)
+  const [chunkViewerChunkId, setChunkViewerChunkId] = useState(null)
+  const [chunkViewerPage, setChunkViewerPage] = useState(null)
+  const [chunkViewerHighlight, setChunkViewerHighlight] = useState('')
+  const [inlineChunkData, setInlineChunkData] = useState(null)
+  const [inlineChunkLoading, setInlineChunkLoading] = useState(false)
+  const [evidenceSections, setEvidenceSections] = useState([])
   const fileInputRef = useRef(null)
 
   useEffect(() => {
@@ -67,6 +87,30 @@ export default function CaseDetailPage() {
       isGoodExample(selectedAnalysis.id).then(setIsMarkedAsGood)
     }
   }, [selectedAnalysis])
+
+  useEffect(() => {
+    if (!chunkViewerChunkId) {
+      setInlineChunkData(null)
+      return
+    }
+    let cancelled = false
+    setInlineChunkLoading(true)
+    fetch(`/api/chunk/${chunkViewerChunkId}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled) {
+          if (chunkViewerPage != null) data.page_number = chunkViewerPage
+          setInlineChunkData(data)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setInlineChunkData(null)
+      })
+      .finally(() => {
+        if (!cancelled) setInlineChunkLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [chunkViewerChunkId, chunkViewerPage])
 
   async function loadCase() {
     try {
@@ -82,10 +126,22 @@ export default function CaseDetailPage() {
       } else {
         setSelectedAnalysis(null)
       }
+      // 증거 섹션 로드
+      await loadEvidenceSections()
     } catch (err) {
       setToast({ message: '사건 로드 실패: ' + err.message, type: 'error' })
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function loadEvidenceSections() {
+    try {
+      const res = await fetch(`/api/cases/${caseId}/evidence-sections`)
+      const data = await res.json()
+      setEvidenceSections(data.sections || [])
+    } catch (err) {
+      console.error('증거 섹션 로드 실패:', err)
     }
   }
 
@@ -225,6 +281,30 @@ export default function CaseDetailPage() {
             caseId: caseId,
           })
 
+          setUploadMessage(`${i + 1}/${selectedFiles.length} 청킹 중...`)
+
+          try {
+            const chunkRes = await fetch('/api/chunk-pdf', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                documentId: docId,
+                txtUrl: ocrJson.txtFileUrl,
+                pageTextsUrl: ocrJson.pageTextsUrl || null,
+              }),
+            })
+            const chunkData = await chunkRes.json()
+            if (chunkData.success) {
+              console.log(`청크 ${chunkData.chunksCount}개 생성됨: ${file.name}`)
+            } else {
+              console.warn('청킹 실패:', chunkData.error)
+              setToast({ message: `${file.name} 청킹 실패 (원문 검색 불가)`, type: 'error' })
+            }
+          } catch (chunkErr) {
+            console.error('청킹 오류:', chunkErr)
+            setToast({ message: `${file.name} 청킹 실패 (원문 검색 불가)`, type: 'error' })
+          }
+
           uploadedDocs.push({
             id: docId,
             fileName: file.name,
@@ -279,7 +359,11 @@ export default function CaseDetailPage() {
 
       if (data.success) {
         setAnalysisResult(data.analysis)
-        setToast({ message: '분석이 완료되었습니다!', type: 'success' })
+        const msg =
+          data.examplesUsed > 0
+            ? `분석 완료! (학습 예시 ${data.examplesUsed}개 반영됨)`
+            : '분석이 완료되었습니다!'
+        setToast({ message: msg, type: 'success' })
         await loadCase()
       } else {
         throw new Error(data.error)
@@ -297,6 +381,57 @@ export default function CaseDetailPage() {
     await analyzeSelected(allIds)
   }
 
+  async function handleKeywordSearch() {
+    if (!searchQuery.trim() || !caseId) return
+    setSearchLoading(true)
+    setSearchResults([])
+    try {
+      const res = await fetch(`/api/cases/${caseId}/search?q=${encodeURIComponent(searchQuery.trim())}`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || '검색 실패')
+      setSearchResults(data.results || [])
+    } catch (err) {
+      console.error('키워드 검색 오류:', err)
+      setSearchResults([])
+      setToast({ message: '검색 실패: ' + err.message, type: 'error' })
+    } finally {
+      setSearchLoading(false)
+    }
+  }
+
+  function openChunkWithHighlight(chunkId, pageNumber, keyword) {
+    setChunkViewerChunkId(chunkId)
+    setChunkViewerPage(pageNumber)
+    setChunkViewerHighlight(keyword || '')
+    setInlineChunkData(null)
+  }
+
+  function closeInlineChunk() {
+    setChunkViewerChunkId(null)
+    setChunkViewerPage(null)
+    setChunkViewerHighlight('')
+    setInlineChunkData(null)
+  }
+
+  function renderChunkContentWithHighlight(content, keyword) {
+    if (!content) return ''
+    let text = String(content)
+      .replace(/<[^>]*>/g, '')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+    if (keyword && keyword.trim()) {
+      const escaped = keyword.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      try {
+        text = text.replace(
+          new RegExp(escaped, 'gi'),
+          (match) => `<mark class="bg-yellow-300 rounded px-0.5">${match}</mark>`
+        )
+      } catch (_) {}
+    }
+    return text
+  }
+
   async function handleRefineWithAI(promptOverride) {
     const refinementRequest = promptOverride ?? refinementPrompt
     if (!refinementRequest.trim()) {
@@ -304,6 +439,9 @@ export default function CaseDetailPage() {
       return
     }
     if (!selectedAnalysis) return
+
+    // 현재 상태 백업
+    setPreviousAnalysis(selectedAnalysis.result)
 
     setIsRefining(true)
     try {
@@ -324,26 +462,65 @@ export default function CaseDetailPage() {
         throw new Error(data.error || '수정 실패')
       }
 
-      // 2. DB에 수정된 결과 저장
-      await updateAnalysisResult(selectedAnalysis.id, data.refinedAnalysis)
+      // 2. 수정된 결과를 '새 분석'으로 추가 (기존 분석은 그대로 두어 비교 가능)
+      const documentIds =
+        selectedAnalysis.result?.document_ids ??
+        (selectedAnalysis.document_id ? [selectedAnalysis.document_id] : caseData.documents?.map((d) => d.id) ?? [])
+      const baseTitle = selectedAnalysis.title || '분석 결과'
+      const newTitle = `[AI 수정] ${baseTitle}`
+      const newId = await saveIntegratedAnalysis(
+        caseId,
+        documentIds,
+        data.refinedAnalysis,
+        newTitle
+      )
 
       // 3. 화면 새로고침
       await loadCase()
 
-      // 4. 같은 분석 다시 선택 (업데이트된 내용 보여주기)
-      setSelectedAnalysis((prev) =>
-        prev ? { ...prev, result: data.refinedAnalysis } : null
-      )
-      setEditedAnalysis(data.refinedAnalysis)
+      // 4. 새로 추가된 분석 선택 (수정된 내용 보여주기)
+      const history = await getCaseAnalysisHistory(caseId)
+      const newAnalysis = history.find((a) => a.id === newId)
+      if (newAnalysis) {
+        setSelectedAnalysis(newAnalysis)
+        setEditedAnalysis(newAnalysis.result)
+      }
 
       setRefinementPrompt('')
       setEditingAnalysis(false)
-      alert('AI 수정이 완료되었습니다.')
+      setPreviousAnalysis(null)
+      alert('AI 수정이 완료되었습니다. 수정 결과가 새 분석으로 추가되었으며, 분석 비교에서 이전 결과와 비교할 수 있습니다.')
     } catch (error) {
       console.error('AI 수정 오류:', error)
       alert(`수정 실패: ${error.message}`)
+      // 실패 시 백업 제거
+      setPreviousAnalysis(null)
     } finally {
       setIsRefining(false)
+    }
+  }
+
+  async function handleUndo() {
+    if (!previousAnalysis || !selectedAnalysis) return
+
+    if (!confirm('⚠️ 이전 상태로 복원하시겠습니까?\n\n복원 후에는 현재 수정 내용이 영구 삭제되며, 다시 돌아갈 수 없습니다.')) {
+      return
+    }
+
+    try {
+      await updateAnalysisResult(selectedAnalysis.id, previousAnalysis)
+      await loadCase()
+
+      setSelectedAnalysis((prev) =>
+        prev ? { ...prev, result: previousAnalysis } : null
+      )
+      setEditedAnalysis(previousAnalysis)
+      setPreviousAnalysis(null)
+
+      setToast({ message: '이전 상태로 복원했습니다.', type: 'success' })
+    } catch (error) {
+      console.error('복원 오류:', error)
+      alert(`복원 실패: ${error.message}`)
     }
   }
 
@@ -776,6 +953,147 @@ export default function CaseDetailPage() {
             )}
           </div>
 
+          {caseData.documents.length > 0 && (
+            <div className="mt-8 p-4 bg-zinc-50 rounded-lg border">
+              <h2 className="text-lg font-semibold mb-3">📋 증거기록 분류</h2>
+              <p className="text-sm text-zinc-600 mb-3">
+                PDF 증거기록을 업로드하면 각 증거를 자동 분류하고, 증거별로 분석할 수 있습니다.
+              </p>
+              <EvidenceClassifier
+                caseId={caseId}
+                documents={caseData.documents}
+                evidenceSections={evidenceSections}
+                onSectionsChange={loadEvidenceSections}
+                onToast={(t) => setToast(t)}
+              />
+            </div>
+          )}
+
+          {caseData.documents.length > 0 && (
+            <div className="mt-8 p-4 bg-zinc-50 rounded-lg border">
+              <h2 className="text-lg font-semibold mb-3">🔍 원문 키워드 검색</h2>
+              <p className="text-sm text-zinc-600 mb-3">
+                문서 원문(OCR 청크)에서 키워드를 검색합니다. 결과를 클릭하면 아래에 PDF와 원문이 바로 표시됩니다.
+              </p>
+
+              {inlineChunkLoading && (
+                <div className="mb-4 flex items-center justify-center py-12 bg-white rounded-lg border">
+                  <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600" />
+                </div>
+              )}
+              {inlineChunkData && !inlineChunkLoading && (
+                <div className="mb-6 bg-white rounded-xl border-2 border-blue-200 overflow-hidden shadow-sm">
+                  <div className="flex items-center justify-between px-4 py-2 bg-blue-50 border-b border-blue-200">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-blue-900">
+                        {inlineChunkData.documents?.original_file_name}
+                      </span>
+                      <span className="text-sm text-blue-700">
+                        p.{chunkViewerPage ?? inlineChunkData.page_number ?? '?'}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={closeInlineChunk}
+                      className="px-3 py-1.5 text-sm text-blue-700 hover:bg-blue-200 rounded-lg"
+                    >
+                      닫기
+                    </button>
+                  </div>
+                  <div className="flex" style={{ minHeight: '420px' }}>
+                    <div className="w-1/2 flex flex-col border-r border-zinc-200">
+                      <div className="flex-1 overflow-hidden bg-zinc-100">
+                        <iframe
+                          src={
+                            inlineChunkData.documents?.pdf_url +
+                            (chunkViewerPage != null || inlineChunkData.page_number
+                              ? `#page=${chunkViewerPage ?? inlineChunkData.page_number ?? 1}`
+                              : '')
+                          }
+                          className="w-full h-full min-h-[400px] border-0"
+                          title="PDF 원문"
+                        />
+                      </div>
+                    </div>
+                    <div className="w-1/2 flex flex-col">
+                      <div className="p-3 border-b bg-amber-50 text-sm text-amber-900">
+                        관련 원문 (검색어 하이라이트)
+                      </div>
+                      <div
+                        className="flex-1 overflow-y-auto p-4 text-sm whitespace-pre-wrap leading-relaxed"
+                        style={{
+                          backgroundColor: '#fef3c7',
+                          borderLeft: '4px solid #f59e0b',
+                        }}
+                        dangerouslySetInnerHTML={{
+                          __html: renderChunkContentWithHighlight(
+                            inlineChunkData.content,
+                            chunkViewerHighlight
+                          ),
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-2 mb-4">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleKeywordSearch()}
+                  placeholder="검색할 단어나 구절 입력"
+                  className="flex-1 px-3 py-2 border border-zinc-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <button
+                  type="button"
+                  onClick={handleKeywordSearch}
+                  disabled={searchLoading || !searchQuery.trim()}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {searchLoading ? '검색 중...' : '검색'}
+                </button>
+              </div>
+              {searchResults.length > 0 && (
+                <div className="space-y-2 max-h-60 overflow-y-auto">
+                  <p className="text-sm font-medium text-zinc-700">
+                    {searchResults.length}건 발견
+                  </p>
+                  {searchResults.map((r) => {
+                    const docName = r.documents?.original_file_name || '문서'
+                    const snippet = (r.content || '')
+                      .replace(/<[^>]*>/g, '')
+                      .replace(/&lt;/g, '<')
+                      .replace(/&gt;/g, '>')
+                      .substring(0, 120)
+                    return (
+                      <button
+                        key={r.id}
+                        type="button"
+                        onClick={() => openChunkWithHighlight(r.id, r.page_number, searchQuery.trim())}
+                        className="w-full text-left p-3 bg-white border border-zinc-200 rounded-lg hover:bg-blue-50 hover:border-blue-200 transition-colors"
+                      >
+                        <div className="flex items-center gap-2 text-sm">
+                          <span className="font-medium text-zinc-800">{docName}</span>
+                          {r.page_number != null && (
+                            <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded text-xs">
+                              p.{r.page_number}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-sm text-zinc-600 mt-1 truncate">{snippet}…</p>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+              {searchQuery.trim() && !searchLoading && searchResults.length === 0 && (
+                <p className="text-sm text-zinc-500">검색 결과가 없습니다. 문서 업로드 후 청킹이 완료된 문서만 검색됩니다.</p>
+              )}
+            </div>
+          )}
+
           {analysisHistory.length === 0 && !isAnalyzing && (
             <EmptyState
               icon="🤖"
@@ -789,9 +1107,24 @@ export default function CaseDetailPage() {
               <h2 className="text-xl font-semibold mb-4">📊 분석 결과</h2>
 
               <div className="mb-6 p-4 bg-zinc-50 rounded-lg border">
-                <h3 className="text-sm font-semibold mb-3 text-zinc-700">
-                  분석 이력 ({analysisHistory.length}개)
-                </h3>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-zinc-700">
+                    분석 이력 ({analysisHistory.length}개)
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCompareModalOpen(true)
+                      setCompareSelectLeft(analysisHistory[0]?.id ?? '')
+                      setCompareSelectRight(analysisHistory[1]?.id ?? analysisHistory[0]?.id ?? '')
+                    }}
+                    disabled={analysisHistory.length < 2}
+                    title={analysisHistory.length < 2 ? '분석이 2개 이상일 때 비교할 수 있습니다' : '두 분석을 나란히 비교합니다'}
+                    className="px-3 py-1.5 text-sm border border-blue-600 text-blue-600 rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    📊 분석 비교
+                  </button>
+                </div>
                 <div className="space-y-2">
                   {analysisHistory.map((analysis, idx) => (
                     <div key={analysis.id} className="flex items-center gap-2">
@@ -874,6 +1207,93 @@ export default function CaseDetailPage() {
                       </button>
                     </div>
                   </div>
+                </div>
+              )}
+
+              {compareModalOpen && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+                  <div className="bg-white rounded-lg p-6 w-full max-w-md">
+                    <h3 className="text-lg font-semibold mb-4">분석 비교</h3>
+                    <p className="text-sm text-zinc-600 mb-4">
+                      비교할 분석 2개를 선택하세요.
+                    </p>
+                    <div className="space-y-4 mb-6">
+                      <div>
+                        <label className="block text-sm font-medium text-zinc-700 mb-1">
+                          첫 번째 분석
+                        </label>
+                        <select
+                          value={compareSelectLeft}
+                          onChange={(e) => setCompareSelectLeft(e.target.value)}
+                          className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          {analysisHistory.map((a) => (
+                            <option key={a.id} value={a.id}>
+                              {a.title || new Date(a.created_at).toLocaleString('ko-KR')}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-zinc-700 mb-1">
+                          두 번째 분석
+                        </label>
+                        <select
+                          value={compareSelectRight}
+                          onChange={(e) => setCompareSelectRight(e.target.value)}
+                          className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          {analysisHistory.map((a) => (
+                            <option key={a.id} value={a.id}>
+                              {a.title || new Date(a.created_at).toLocaleString('ko-KR')}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="flex gap-2 justify-end">
+                      <button
+                        type="button"
+                        onClick={() => setCompareModalOpen(false)}
+                        className="px-4 py-2 text-zinc-600 hover:bg-zinc-100 rounded-lg"
+                      >
+                        취소
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (compareSelectLeft && compareSelectRight && compareSelectLeft !== compareSelectRight) {
+                            const left = analysisHistory.find((a) => a.id === compareSelectLeft)
+                            const right = analysisHistory.find((a) => a.id === compareSelectRight)
+                            if (left && right) {
+                              setCompareLeft(left)
+                              setCompareRight(right)
+                              setCompareModalOpen(false)
+                            }
+                          } else {
+                            alert('서로 다른 분석 2개를 선택해주세요.')
+                          }
+                        }}
+                        disabled={!compareSelectLeft || !compareSelectRight || compareSelectLeft === compareSelectRight}
+                        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        비교 보기
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {compareLeft && compareRight && (
+                <div className="mt-6">
+                  <AnalysisCompareView
+                    left={compareLeft}
+                    right={compareRight}
+                    onClose={() => {
+                      setCompareLeft(null)
+                      setCompareRight(null)
+                    }}
+                  />
                 </div>
               )}
 
@@ -1058,14 +1478,23 @@ export default function CaseDetailPage() {
                           {selectedAnalysis.result?.evidence?.map((ev, i) => (
                             <div
                               key={i}
-                              className="flex items-start gap-2"
+                              className="flex items-start gap-2 p-2 rounded-lg border border-zinc-100"
                             >
-                              <span className="inline-block px-2 py-1 text-xs font-medium bg-zinc-100 text-zinc-700 rounded">
+                              <span className="inline-block px-2 py-1 text-xs font-medium bg-zinc-100 text-zinc-700 rounded shrink-0">
                                 {ev.type}
                               </span>
-                              <span className="text-zinc-700 flex-1">
-                                {ev.description}
-                              </span>
+                              <div className="flex-1 min-w-0">
+                                <span className="text-zinc-700">{ev.description}</span>
+                                {ev.page && (
+                                  <div className="text-xs text-blue-600 mt-0.5">📄 p.{ev.page}</div>
+                                )}
+                                {ev.note && (
+                                  <div className="mt-2 text-sm text-zinc-600 bg-blue-50/80 border-l-2 border-blue-200 pl-2 py-1 rounded-r">
+                                    <span className="font-medium text-zinc-500">📝 메모</span>
+                                    <p className="mt-0.5">{ev.note}</p>
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           ))}
                         </div>
@@ -1180,6 +1609,20 @@ export default function CaseDetailPage() {
                         <h4 className="font-semibold mb-3">
                           AI에게 수정 요청
                         </h4>
+                        
+                        {previousAnalysis && (
+                          <div className="mb-4">
+                            <button
+                              type="button"
+                              onClick={handleUndo}
+                              className="px-4 py-2 text-sm bg-amber-100 text-amber-700 border border-amber-300 rounded-md hover:bg-amber-200 flex items-center gap-2"
+                            >
+                              <span>↩️</span>
+                              <span>실행 취소 (이전 상태로 복원)</span>
+                            </button>
+                          </div>
+                        )}
+                        
                         <div className="flex flex-wrap gap-2 mb-3">
                           <button
                             onClick={() =>
@@ -1262,6 +1705,19 @@ export default function CaseDetailPage() {
           )}
         </div>
       </main>
+
+      <ChunkViewer
+        isOpen={chunkViewerOpen}
+        chunkId={chunkViewerChunkId}
+        onClose={() => {
+          setChunkViewerOpen(false)
+          setChunkViewerChunkId(null)
+          setChunkViewerPage(null)
+          setChunkViewerHighlight('')
+        }}
+        pageNumber={chunkViewerPage}
+        highlightKeyword={chunkViewerHighlight}
+      />
     </div>
   )
 }

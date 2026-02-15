@@ -22,6 +22,9 @@
 - **AI 어시스턴트**: Claude (설계), Cursor (구현)
 - **버전 관리**: Git + GitHub
 
+## 주요 라이브러리
+- **diff**: 분석 비교 시 텍스트 차이(단어 단위) 하이라이트
+
 ## 환경 변수
 NEXT_PUBLIC_SUPABASE_URL
 NEXT_PUBLIC_SUPABASE_ANON_KEY

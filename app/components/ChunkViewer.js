@@ -2,7 +2,11 @@
 
 import { useState, useEffect } from 'react'
 
-export default function ChunkViewer({ isOpen, chunkId, onClose, pageNumber }) {
+function escapeRegex(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+export default function ChunkViewer({ isOpen, chunkId, onClose, pageNumber, highlightKeyword }) {
   const [chunkData, setChunkData] = useState(null)
   const [loading, setLoading] = useState(true)
 
@@ -88,7 +92,12 @@ export default function ChunkViewer({ isOpen, chunkId, onClose, pageNumber }) {
               </div>
               <div className="flex-1 overflow-hidden">
                 <iframe
-                  src={chunkData.documents?.pdf_url}
+                  src={
+                    chunkData.documents?.pdf_url +
+                    (pageNumber || chunkData?.page_number
+                      ? `#page=${pageNumber ?? chunkData?.page_number ?? 1}`
+                      : '')
+                  }
                   className="w-full h-full border-0"
                   title="PDF"
                 />
@@ -108,16 +117,28 @@ export default function ChunkViewer({ isOpen, chunkId, onClose, pageNumber }) {
                   <div
                     className="whitespace-pre-wrap p-4 rounded-lg leading-relaxed"
                     style={{
-                      backgroundColor: '#fef3c7', // 진한 노란색
-                      borderLeft: '4px solid #f59e0b', // 주황색 테두리
-                      boxShadow: '0 0 0 3px rgba(245, 158, 11, 0.1)' // 은은한 그림자
+                      backgroundColor: '#fef3c7',
+                      borderLeft: '4px solid #f59e0b',
+                      boxShadow: '0 0 0 3px rgba(245, 158, 11, 0.1)'
                     }}
                     dangerouslySetInnerHTML={{
-                      __html: (chunkData.content || '')
-                        .replace(/<[^>]*>/g, '') // HTML 태그 제거
-                        .replace(/&lt;/g, '<')
-                        .replace(/&gt;/g, '>')
-                        .replace(/&amp;/g, '&')
+                      __html: (() => {
+                        let text = (chunkData.content || '')
+                          .replace(/<[^>]*>/g, '')
+                          .replace(/&lt;/g, '<')
+                          .replace(/&gt;/g, '>')
+                          .replace(/&amp;/g, '&')
+                        if (highlightKeyword && highlightKeyword.trim()) {
+                          const escaped = escapeRegex(highlightKeyword.trim())
+                          try {
+                            text = text.replace(
+                              new RegExp(escaped, 'gi'),
+                              (match) => `<mark class="bg-yellow-300 rounded px-0.5">${match}</mark>`
+                            )
+                          } catch (_) {}
+                        }
+                        return text
+                      })()
                     }}
                   />
                 </div>

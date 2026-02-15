@@ -51,6 +51,31 @@ export async function POST(request) {
     
     console.log('OCR 완료! 텍스트 길이:', extractedText.length)
 
+    // elements 배열에서 페이지별 텍스트 추출
+    let pageTexts = null
+    const elements = data.elements || data.content?.elements || []
+    if (elements.length > 0) {
+      const pageMap = new Map()
+      for (const el of elements) {
+        const pageNum = el.page ?? el.page_id ?? el.pageNumber ?? null
+        if (pageNum != null) {
+          const text = el.text || el.content?.text || el.html || el.content?.html || ''
+          if (!pageMap.has(pageNum)) pageMap.set(pageNum, [])
+          pageMap.get(pageNum).push(text)
+        }
+      }
+      if (pageMap.size > 0) {
+        pageTexts = {}
+        for (const [page, texts] of pageMap) {
+          pageTexts[page] = texts.join('\n')
+        }
+        console.log(`페이지별 텍스트 추출: ${pageMap.size}페이지`)
+      }
+    }
+    if (!pageTexts) {
+      console.log('elements에서 페이지 정보를 찾을 수 없음, footer 태그 방식 사용')
+    }
+
     // 2. 텍스트를 UTF-8 txt 파일로 저장
     const timestamp = Date.now()
     const txtFileName = `${timestamp}.txt`
@@ -78,11 +103,34 @@ export async function POST(request) {
       .from('documents')
       .getPublicUrl(txtFileName)
     
+    // pageTexts도 별도 JSON으로 저장
+    let pageTextsUrl = null
+    if (pageTexts) {
+      const ptFileName = `${timestamp}_pages.json`
+      const ptBlob = new Blob([JSON.stringify(pageTexts)], {
+        type: 'application/json; charset=utf-8',
+      })
+      const { error: ptError } = await supabase.storage
+        .from('documents')
+        .upload(ptFileName, ptBlob, {
+          contentType: 'application/json; charset=utf-8',
+          cacheControl: '3600',
+        })
+      if (!ptError) {
+        const { data: ptUrlData } = supabase.storage
+          .from('documents')
+          .getPublicUrl(ptFileName)
+        pageTextsUrl = ptUrlData?.publicUrl
+        console.log('페이지별 텍스트 저장 완료:', ptFileName)
+      }
+    }
+
     return NextResponse.json({
       success: true,
       text: extractedText,
       txtFileUrl: txtUrlData?.publicUrl,
       txtFileName: txtFileName,
+      pageTextsUrl,
       rawData: data
     })
     

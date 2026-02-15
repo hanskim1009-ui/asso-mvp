@@ -26,6 +26,7 @@ export async function POST(request) {
       .join('\n\n=== 문서 구분 ===\n\n')
 
     const examples = await getGoodExamples(caseType || '폭행', 3)
+    console.log('[Few-shot] 사건 유형:', caseType || '폭행', '| 학습 예시 개수:', examples.length)
 
     let systemPrompt = `당신은 한국 형사변호 전문 AI 어시스턴트입니다.
 
@@ -136,7 +137,7 @@ export async function POST(request) {
     const cleanText = text.replace(/```json|```/g, '').trim()
     console.log('=== 정제된 응답 ===')
     console.log(cleanText.substring(0, 500))
-    
+
     const analysis = JSON.parse(cleanText)
 
     if (caseId && documentIds?.length > 0) {
@@ -146,6 +147,7 @@ export async function POST(request) {
     return NextResponse.json({
       success: true,
       analysis,
+      examplesUsed: examples.length,
     })
   } catch (error) {
     console.error('Integrated analysis error:', error)

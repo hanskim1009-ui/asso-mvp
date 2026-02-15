@@ -50,8 +50,8 @@
   {
     summary: string
     issues: string[]
-    timeline: { date, event, source, page }[]
-    evidence: { type, description, page }[]
+    timeline: { date, event, source, page, note? }[]
+    evidence: { type, description, page, note? }[]
     favorable_facts: string[]
     contradictions: { statement_1, statement_2, analysis }[]
   }
@@ -65,12 +65,17 @@
 ### 문서
 - POST /api/ocr - OCR 처리
 - DELETE /api/documents/[id] - 문서 삭제 (soft)
+- GET /api/chunk/[id] - 청크 단건 조회 (원문/PDF 링크 등)
 
 ### 분석
 - POST /api/analyze-integrated - 통합 분석
-- POST /api/refine - AI 수정
+- POST /api/refine - AI 수정 (결과는 새 분석으로 저장 시 saveIntegratedAnalysis 사용)
 - PATCH /api/analysis/[id] - 제목 수정
 - DELETE /api/analysis/[id] - 분석 삭제 (soft)
 
 ### Case
-- lib/database.js 함수들 사용
+- lib/database.js 함수들 사용 (saveIntegratedAnalysis optionalTitle 지원)
+
+## 주요 UI 흐름
+- **분석 비교**: 분석 이력에서 "분석 비교" → 2개 선택 → AnalysisCompareView (차이 강조는 created_at 기준 이전/이후)
+- **AI 수정**: 수정 요청 시 기존 분석은 유지, 수정 결과는 새 analysis_results 행으로 저장 → 비교로 수정 전/후 확인 가능
