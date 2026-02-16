@@ -114,15 +114,26 @@ export async function POST(request, { params }) {
       return NextResponse.json({ error: '섹션을 찾을 수 없습니다.' }, { status: 404 })
     }
 
-    // 분석할 텍스트 결정
-    let textToAnalyze = section.extracted_text || ''
-    if (section.ocr_quality === 'failed' && section.user_description) {
-      textToAnalyze = `[사용자 설명] ${section.user_description}`
+    // 분석할 텍스트 결정 (원문 + Vision 설명 + 사용자 설명 + 메모 모두 AI에 전달)
+    const parts = []
+    if (section.extracted_text?.trim()) {
+      parts.push(`[원문]\n${section.extracted_text.trim()}`)
     }
+    if (section.vision_description?.trim()) {
+      parts.push(`[Vision 설명]\n${section.vision_description.trim()}`)
+    }
+    if (section.ocr_quality === 'failed' && section.user_description?.trim()) {
+      parts.push(`[사용자 설명 (OCR 불가)]\n${section.user_description.trim()}`)
+    }
+    if (section.section_memo?.trim()) {
+      parts.push(`[사용자 메모]\n${section.section_memo.trim()}`)
+    }
+
+    const textToAnalyze = parts.join('\n\n')
 
     if (!textToAnalyze || textToAnalyze.trim().length < 10) {
       return NextResponse.json(
-        { error: '분석할 텍스트가 부족합니다. OCR 불가 증거는 먼저 설명을 입력해주세요.' },
+        { error: '분석할 텍스트가 부족합니다. 원문, Vision 설명, 사용자 설명(OCR 불가 시), 또는 메모를 입력해주세요.' },
         { status: 400 }
       )
     }
@@ -145,6 +156,8 @@ ${sectionPrompt}
 
 [증거 유형: ${section.section_title || section.section_type}]
 [페이지: ${section.start_page}-${section.end_page}]
+
+위 증거의 원문·사용자 설명·메모를 반드시 참고하여 분석하세요.
 
 ${textToAnalyze.substring(0, 100000)}
 

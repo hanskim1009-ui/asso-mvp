@@ -130,18 +130,42 @@ export async function POST(request) {
       contents: [{ role: 'user', parts: [{ text: fullPrompt }] }],
     })
 
-    const text = result.response.text()
+    const text = result.response?.text?.() ?? ''
+    if (!text || typeof text !== 'string') {
+      return NextResponse.json(
+        { error: 'AI가 응답을 생성하지 못했습니다. 다시 시도해주세요.' },
+        { status: 500 }
+      )
+    }
     console.log('=== AI 원본 응답 ===')
     console.log(text.substring(0, 500))
 
     const cleanText = text.replace(/```json|```/g, '').trim()
-    console.log('=== 정제된 응답 ===')
-    console.log(cleanText.substring(0, 500))
+    // JSON 블록만 추출 (앞뒤 설명문 제거)
+    const firstBrace = cleanText.indexOf('{')
+    const lastBrace = cleanText.lastIndexOf('}')
+    const jsonStr = firstBrace >= 0 && lastBrace > firstBrace
+      ? cleanText.slice(firstBrace, lastBrace + 1)
+      : cleanText
 
-    const analysis = JSON.parse(cleanText)
+    let analysis
+    try {
+      analysis = JSON.parse(jsonStr)
+    } catch (parseErr) {
+      console.error('JSON parse error. Extracted string:', jsonStr.substring(0, 800))
+      return NextResponse.json(
+        { error: '분석 결과 파싱에 실패했습니다. 다시 시도해주세요.' },
+        { status: 500 }
+      )
+    }
 
     if (caseId && documentIds?.length > 0) {
-      await saveIntegratedAnalysis(caseId, documentIds, analysis)
+      try {
+        await saveIntegratedAnalysis(caseId, documentIds, analysis)
+      } catch (saveErr) {
+        console.error('saveIntegratedAnalysis error:', saveErr)
+        // 저장 실패해도 분석 결과는 반환 (저장만 스킵)
+      }
     }
 
     return NextResponse.json({

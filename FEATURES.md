@@ -73,6 +73,10 @@
 - [x] OCR 불가 섹션: 사용자 설명·태그 입력
 - [x] 증거 섹션별 개별 분석 (유형별 프롬프트)
 - [x] 분류 결과 수정, 분석 결과 표시
+- [x] **Vision으로 설명 생성** (사진 증거·OCR 불가 섹션)
+  - 해당 PDF 페이지를 이미지로 Gemini Vision에 전달 → 객관적 설명 생성 후 `vision_description` 저장
+  - 개별 분석 시 원문 + Vision 설명 + 메모를 함께 참고
+  - UI: 확장 시 Vision 설명 블록 표시, "Vision으로 설명 생성" / "Vision 재생성" 버튼
 
 ### 8. UI/UX
 - [x] Timeline 시각화

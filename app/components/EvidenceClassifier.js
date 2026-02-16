@@ -42,6 +42,7 @@ export default function EvidenceClassifier({
   const [editForm, setEditForm] = useState({})
   const [analyzingSection, setAnalyzingSection] = useState(null)
   const [viewingAnalysis, setViewingAnalysis] = useState(null)
+  const [describingWithVision, setDescribingWithVision] = useState(null)
 
   // 증거기록 분류 시작
   const handleClassify = async (documentId) => {
@@ -77,6 +78,7 @@ export default function EvidenceClassifier({
       section_title: section.section_title || '',
       user_description: section.user_description || '',
       user_tags: (section.user_tags || []).join(', '),
+      section_memo: section.section_memo || '',
     })
   }
 
@@ -94,6 +96,7 @@ export default function EvidenceClassifier({
             .split(',')
             .map((t) => t.trim())
             .filter(Boolean),
+          section_memo: editForm.section_memo || null,
         }),
       })
       const data = await res.json()
@@ -125,6 +128,47 @@ export default function EvidenceClassifier({
       onToast?.({ type: 'error', message: err.message })
     } finally {
       setAnalyzingSection(null)
+    }
+  }
+
+  /** PDF 한 페이지를 캔버스로 렌더한 뒤 PNG base64 반환 (클라이언트) */
+  const renderSectionPageToImage = async (pdfUrl, pageNumber) => {
+    const pdfjs = await import('pdfjs-dist/webpack.mjs')
+    const pdf = await pdfjs.getDocument({ url: pdfUrl }).promise
+    const page = await pdf.getPage(Number(pageNumber))
+    const scale = 1.5
+    const viewport = page.getViewport({ scale })
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')
+    canvas.width = viewport.width
+    canvas.height = viewport.height
+    await page.render({ canvasContext: ctx, viewport }).promise
+    return canvas.toDataURL('image/png')
+  }
+
+  /** Vision으로 설명 생성: 클라이언트에서 해당 페이지 이미지 생성 후 API 호출 */
+  const handleDescribeWithVision = async (section) => {
+    const doc = documents.find((d) => d.id === section.document_id)
+    if (!doc?.pdf_url) {
+      onToast?.({ type: 'error', message: '문서 PDF URL을 찾을 수 없습니다.' })
+      return
+    }
+    setDescribingWithVision(section.id)
+    try {
+      const imageBase64 = await renderSectionPageToImage(doc.pdf_url, section.start_page)
+      const res = await fetch(`/api/evidence-sections/${section.id}/describe-with-vision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64 }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Vision 설명 생성 실패')
+      onToast?.({ type: 'success', message: 'Vision 설명이 생성되었습니다.' })
+      onSectionsChange?.()
+    } catch (err) {
+      onToast?.({ type: 'error', message: err.message })
+    } finally {
+      setDescribingWithVision(null)
     }
   }
 
@@ -280,6 +324,18 @@ export default function EvidenceClassifier({
                                   </div>
                                 )}
                                 <div>
+                                  <label className="text-xs font-medium text-zinc-600">
+                                    메모 (분석 시 AI가 참고합니다)
+                                  </label>
+                                  <textarea
+                                    value={editForm.section_memo}
+                                    onChange={(e) => setEditForm({ ...editForm, section_memo: e.target.value })}
+                                    rows={3}
+                                    placeholder="예: 이 사진은 변호사가 촬영한 현장 사진, 피해 부위가 명확히 보임"
+                                    className="mt-1 w-full px-3 py-2 text-sm border rounded-lg"
+                                  />
+                                </div>
+                                <div>
                                   <label className="text-xs font-medium text-zinc-600">태그 (쉼표 구분)</label>
                                   <input
                                     type="text"
@@ -308,6 +364,20 @@ export default function EvidenceClassifier({
                               </div>
                             ) : (
                               <div className="pt-3 space-y-2">
+                                {/* Vision 설명 표시 */}
+                                {section.vision_description?.trim() && (
+                                  <div className="p-3 bg-violet-50 border border-violet-200 rounded-lg">
+                                    <p className="text-xs font-medium text-violet-700 mb-1">👁 Vision 설명</p>
+                                    <p className="text-sm text-violet-800 whitespace-pre-wrap">{section.vision_description}</p>
+                                  </div>
+                                )}
+                                {/* 메모 표시 */}
+                                {section.section_memo?.trim() && (
+                                  <div className="p-3 bg-sky-50 border border-sky-200 rounded-lg">
+                                    <p className="text-xs font-medium text-sky-700 mb-1">📌 메모</p>
+                                    <p className="text-sm text-sky-800 whitespace-pre-wrap">{section.section_memo}</p>
+                                  </div>
+                                )}
                                 {/* OCR 불가 경고 */}
                                 {section.ocr_quality === 'failed' && (
                                   <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
@@ -370,7 +440,7 @@ export default function EvidenceClassifier({
                                 )}
 
                                 {/* 액션 버튼 */}
-                                <div className="flex gap-2 pt-1">
+                                <div className="flex flex-wrap gap-2 pt-1">
                                   <button
                                     type="button"
                                     onClick={(e) => {
@@ -381,13 +451,26 @@ export default function EvidenceClassifier({
                                   >
                                     수정
                                   </button>
+                                  {(section.section_type === 'photo_evidence' || section.ocr_quality === 'failed') && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation()
+                                        handleDescribeWithVision(section)
+                                      }}
+                                      disabled={!!describingWithVision}
+                                      className="px-3 py-1 text-xs bg-violet-600 text-white rounded hover:bg-violet-700 disabled:opacity-50"
+                                    >
+                                      {describingWithVision === section.id ? '생성 중...' : section.vision_description ? 'Vision 재생성' : 'Vision으로 설명 생성'}
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
                                     onClick={(e) => {
                                       e.stopPropagation()
                                       handleAnalyzeSection(section.id)
                                     }}
-                                    disabled={isAnalyzing || section.ocr_quality === 'failed' && !section.user_description}
+                                    disabled={isAnalyzing || (section.ocr_quality === 'failed' && !section.user_description && !section.section_memo && !section.vision_description)}
                                     className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
                                   >
                                     {isAnalyzing ? '분석 중...' : section.is_analyzed ? '재분석' : '분석'}

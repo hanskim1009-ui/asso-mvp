@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS evidence_sections (
   ocr_quality TEXT DEFAULT 'good',
   user_description TEXT,
   user_tags TEXT[],
+  section_memo TEXT,
+  vision_description TEXT,
   analysis_result JSONB,
   is_analyzed BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -65,4 +67,13 @@ CREATE POLICY "evidence_sections_select" ON evidence_sections FOR SELECT TO anon
 CREATE POLICY "evidence_sections_insert" ON evidence_sections FOR INSERT TO anon, authenticated WITH CHECK (true);
 CREATE POLICY "evidence_sections_update" ON evidence_sections FOR UPDATE TO anon, authenticated USING (true) WITH CHECK (true);
 CREATE POLICY "evidence_sections_delete" ON evidence_sections FOR DELETE TO anon, authenticated USING (true);
+```
+
+## 3. 기존 테이블에 컬럼 추가 (이미 테이블을 만든 경우)
+
+`evidence_sections` 테이블을 이미 생성했다면, SQL Editor에서 아래를 실행하세요.
+
+```sql
+ALTER TABLE evidence_sections ADD COLUMN IF NOT EXISTS section_memo TEXT;
+ALTER TABLE evidence_sections ADD COLUMN IF NOT EXISTS vision_description TEXT;
 ```

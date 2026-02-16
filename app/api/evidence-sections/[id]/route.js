@@ -22,7 +22,7 @@ export async function GET(request, { params }) {
 
 /**
  * PUT /api/evidence-sections/[id] — 증거 섹션 수정
- * Body: { section_type?, section_title?, user_description?, user_tags? }
+ * Body: { section_type?, section_title?, user_description?, user_tags?, section_memo? }
  */
 export async function PUT(request, { params }) {
   try {
