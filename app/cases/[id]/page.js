@@ -79,12 +79,17 @@ export default function CaseDetailPage() {
   const [evidenceSections, setEvidenceSections] = useState([])
   const [opinionModalOpen, setOpinionModalOpen] = useState(false)
   const [opinionType, setOpinionType] = useState('sentencing')
-  const [opinionModel, setOpinionModel] = useState('gemini-2.5-flash')
+  const [opinionModelPhase1, setOpinionModelPhase1] = useState('claude-opus-4.5')
+  const [opinionModelPhase2, setOpinionModelPhase2] = useState('gemini-2.5-flash')
   const [opinionUserPrompt, setOpinionUserPrompt] = useState('')
   const [referenceCandidates, setReferenceCandidates] = useState([])
   const [referenceCandidatesLoading, setReferenceCandidatesLoading] = useState(false)
   const [selectedReferenceIds, setSelectedReferenceIds] = useState([])
   const [opinionGenerating, setOpinionGenerating] = useState(false)
+  const [opinionStep, setOpinionStep] = useState('config') // 'config' | 'outline' | 'chunk'
+  const [opinionOutline, setOpinionOutline] = useState('')
+  const [opinionMetaPrompt, setOpinionMetaPrompt] = useState('')
+  const [opinionChunks, setOpinionChunks] = useState([])
   const [opinionResult, setOpinionResult] = useState(null)
   const [analysisPdfViewer, setAnalysisPdfViewer] = useState(null) // { pdfUrl, pageNumber, documentName }
   const [analysisPdfZoom, setAnalysisPdfZoom] = useState(120) // 기본 조금 크게 (가독성)
@@ -636,13 +641,21 @@ export default function CaseDetailPage() {
     )
   }
 
-  async function generateOpinion() {
+  function getSelectedReferenceChunks() {
+    return referenceCandidates.filter((c) => selectedReferenceIds.includes(c.id))
+  }
+
+  async function generateOpinionOutline() {
     if (!selectedAnalysis?.result) return
     setOpinionGenerating(true)
+    setOpinionStep('config')
+    setOpinionOutline('')
+    setOpinionMetaPrompt('')
+    setOpinionChunks([])
     setOpinionResult(null)
     try {
-      const selectedChunks = referenceCandidates.filter((c) => selectedReferenceIds.includes(c.id))
-      const res = await fetch('/api/opinion/generate', {
+      const selectedChunks = getSelectedReferenceChunks()
+      const res = await fetch('/api/opinion/generate-outline', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -650,16 +663,61 @@ export default function CaseDetailPage() {
           userContext: caseContext,
           opinionType,
           userPrompt: opinionUserPrompt.trim() || undefined,
-          model: opinionModel,
+          model: opinionModelPhase1,
           selectedReferenceChunks: selectedChunks.length > 0 ? selectedChunks : undefined,
         }),
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error || '의견서 생성 실패')
-      setOpinionResult(data.opinion)
-      setToast({ message: '의견서가 생성되었습니다.', type: 'success' })
+      if (!res.ok) throw new Error(data.error || '1차 생성 실패')
+      setOpinionOutline(data.outline ?? '')
+      setOpinionMetaPrompt(data.metaPrompt ?? '')
+      setOpinionStep('outline')
+      setToast({ message: '목차·방향이 생성되었습니다. 확인 후 2차 작성을 진행하세요.', type: 'success' })
     } catch (err) {
-      setToast({ message: err.message || '의견서 생성에 실패했습니다.', type: 'error' })
+      setToast({ message: err.message || '1차(목차·방향) 생성에 실패했습니다.', type: 'error' })
+    } finally {
+      setOpinionGenerating(false)
+    }
+  }
+
+  async function generateOpinionChunk(partIndex) {
+    if (!selectedAnalysis?.result || opinionOutline === '' || opinionMetaPrompt === '') return
+    setOpinionGenerating(true)
+    try {
+      const selectedChunks = getSelectedReferenceChunks()
+      const res = await fetch('/api/opinion/generate-chunk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          analysis: selectedAnalysis.result,
+          userContext: caseContext,
+          opinionType,
+          outline: opinionOutline,
+          metaPrompt: opinionMetaPrompt,
+          model: opinionModelPhase2,
+          partIndex,
+          previousChunks: opinionChunks,
+          selectedReferenceChunks: selectedChunks.length > 0 ? selectedChunks : undefined,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || `${partIndex + 1}차 생성 실패`)
+      const typeLabel = OPINION_TYPES[opinionType]?.label || opinionType
+      setOpinionChunks((prev) => {
+        const next = [...prev, data.chunk]
+        setOpinionResult({
+          title: `${typeLabel} - ${new Date().toISOString().slice(0, 10)}`,
+          body: next.join('\n\n'),
+          model: opinionModelPhase2,
+          opinionType,
+          generatedAt: new Date().toISOString(),
+        })
+        return next
+      })
+      setOpinionStep('chunk')
+      setToast({ message: `${partIndex + 1}차 본문이 생성되었습니다.`, type: 'success' })
+    } catch (err) {
+      setToast({ message: err.message || '본문 파트 생성에 실패했습니다.', type: 'error' })
     } finally {
       setOpinionGenerating(false)
     }
@@ -1589,6 +1647,10 @@ export default function CaseDetailPage() {
                       <button
                         type="button"
                         onClick={() => {
+                          setOpinionStep('config')
+                          setOpinionOutline('')
+                          setOpinionMetaPrompt('')
+                          setOpinionChunks([])
                           setOpinionResult(null)
                           setReferenceCandidates([])
                           setSelectedReferenceIds([])
@@ -2005,6 +2067,9 @@ export default function CaseDetailPage() {
               </button>
             </div>
             <div className="p-4 overflow-y-auto flex-1 space-y-4">
+              <p className="text-sm text-zinc-500">
+                1차: 목차·방향 생성 → 확인/수정 후 2차 작성 → 필요 시 3차·4차로 이어서 작성합니다.
+              </p>
               <div>
                 <label className="block text-sm font-medium text-zinc-700 mb-1">의견서 종류</label>
                 <select
@@ -2017,17 +2082,31 @@ export default function CaseDetailPage() {
                   ))}
                 </select>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 mb-1">AI 모델</label>
-                <select
-                  value={opinionModel}
-                  onChange={(e) => setOpinionModel(e.target.value)}
-                  className="w-full px-3 py-2 border border-zinc-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                >
-                  {OPINION_MODELS.map((m) => (
-                    <option key={m.id} value={m.id}>{m.label}</option>
-                  ))}
-                </select>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 mb-1">1차 AI 모델 (목차·방향)</label>
+                  <select
+                    value={opinionModelPhase1}
+                    onChange={(e) => setOpinionModelPhase1(e.target.value)}
+                    className="w-full px-3 py-2 border border-zinc-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    {OPINION_MODELS.map((m) => (
+                      <option key={m.id} value={m.id}>{m.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 mb-1">2~3차 AI 모델 (본문 작성)</label>
+                  <select
+                    value={opinionModelPhase2}
+                    onChange={(e) => setOpinionModelPhase2(e.target.value)}
+                    className="w-full px-3 py-2 border border-zinc-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    {OPINION_MODELS.map((m) => (
+                      <option key={m.id} value={m.id}>{m.label}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
               <div>
                 <label className="block text-sm font-medium text-zinc-700 mb-1">추가 지시 (선택)</label>
@@ -2106,6 +2185,64 @@ export default function CaseDetailPage() {
                 )}
               </div>
 
+              {(opinionStep === 'outline' || opinionStep === 'chunk') && (
+                <div className="border-t pt-4 space-y-3">
+                  <h4 className="font-medium text-zinc-800">1차 결과 (수정 가능)</h4>
+                  <div>
+                    <label className="block text-xs font-medium text-zinc-500 mb-1">목차</label>
+                    <textarea
+                      value={opinionOutline}
+                      onChange={(e) => setOpinionOutline(e.target.value)}
+                      className="w-full px-3 py-2 border border-zinc-300 rounded-lg text-sm resize-none"
+                      rows={4}
+                      placeholder="목차"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-zinc-500 mb-1">작성 AI용 지시문</label>
+                    <textarea
+                      value={opinionMetaPrompt}
+                      onChange={(e) => setOpinionMetaPrompt(e.target.value)}
+                      className="w-full px-3 py-2 border border-zinc-300 rounded-lg text-sm resize-none"
+                      rows={5}
+                      placeholder="2~3차 AI에게 전달할 지시문"
+                    />
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {opinionChunks.length === 0 && (
+                      <button
+                        type="button"
+                        onClick={() => generateOpinionChunk(0)}
+                        disabled={opinionGenerating || !opinionOutline.trim() || !opinionMetaPrompt.trim()}
+                        className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+                      >
+                        {opinionGenerating ? '생성 중…' : '2차 작성'}
+                      </button>
+                    )}
+                    {opinionChunks.length === 1 && (
+                      <button
+                        type="button"
+                        onClick={() => generateOpinionChunk(1)}
+                        disabled={opinionGenerating}
+                        className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+                      >
+                        {opinionGenerating ? '생성 중…' : '3차 작성'}
+                      </button>
+                    )}
+                    {opinionChunks.length === 2 && (
+                      <button
+                        type="button"
+                        onClick={() => generateOpinionChunk(2)}
+                        disabled={opinionGenerating}
+                        className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+                      >
+                        {opinionGenerating ? '생성 중…' : '4차 작성'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {opinionResult && (
                 <div className="border-t pt-4 space-y-2">
                   <h4 className="font-medium text-zinc-800">{opinionResult.title}</h4>
@@ -2133,14 +2270,31 @@ export default function CaseDetailPage() {
               >
                 닫기
               </button>
-              <button
-                type="button"
-                onClick={generateOpinion}
-                disabled={opinionGenerating}
-                className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {opinionGenerating ? '생성 중…' : '의견서 생성'}
-              </button>
+              {opinionStep === 'config' && (
+                <button
+                  type="button"
+                  onClick={generateOpinionOutline}
+                  disabled={opinionGenerating}
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {opinionGenerating ? '1차 생성 중…' : '1차: 목차·방향 생성'}
+                </button>
+              )}
+              {(opinionStep === 'outline' || opinionStep === 'chunk') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpinionStep('config')
+                    setOpinionOutline('')
+                    setOpinionMetaPrompt('')
+                    setOpinionChunks([])
+                    setOpinionResult(null)
+                  }}
+                  className="px-4 py-2 border border-zinc-300 rounded-lg hover:bg-zinc-50"
+                >
+                  처음부터
+                </button>
+              )}
             </div>
           </div>
         </div>

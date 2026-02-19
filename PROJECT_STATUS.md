@@ -37,6 +37,16 @@
   - 타임라인·증거의 페이지 참조(p.N) 클릭 시 **분석 상세 칸 밖** 오른쪽에 PDF 뷰어 고정
   - 넓은 패널(min(560px,55vw)), 페이지 표시·이전/다음·확대/축소, 진한 툴바 스타일
 - **텍스트 레이어 오버레이**: 원문 키워드 검색 뷰어에 OCR 텍스트 겹치기 시도 후 전면 revert (내일 재시도 예정)
+- **의견서 2단계 생성 (2026-02-20)**
+  - **1차**: 비싼 모델(Claude Opus 4.5 등)로 **목차 + "다른 AI에게 쓸 지시문(metaPrompt)"** 생성.
+  - **2~4차**: 가성비 모델(Gemini 2.5 Flash 등)로 본문을 파트별로 수동 실행 (2차 → 3차 → 4차).
+  - 사건 상세에서 **1차 AI 모델 / 2~3차 AI 모델** 각각 선택 가능. 테스트용으로 1차 실행 후 사용자 확인 → 2~4차 수동 진행.
+  - API: `POST /api/opinion/generate-outline` (목차·지시문), `POST /api/opinion/generate-chunk` (본문 파트).
+  - `lib/opinionPrompts.js`에 Claude Opus 4.5 추가, `getOpinionLearningExamples`는 `lib/database.js`에서 export (학습 예시 테이블 없으면 빈 배열).
+- **참고자료 RAG (2026-02-20)**
+  - 참고자료(양형기준표, 판례 등) PDF 업로드 → 청킹·임베딩·메타데이터 태깅 → 벡터 검색으로 의견서 프롬프트에 삽입.
+  - `reference_documents`, `reference_chunks` 설계·테이블 설정 문서: `docs/REFERENCE_RAG_DESIGN.md`, `docs/REFERENCE_RAG_TABLES_SETUP.md`.
+  - 의견서 관련 테이블·학습 예시: `docs/OPINION_TABLES_SETUP.md`, `docs/OPINION_PERSISTENCE_AND_LEARNING.md`.
 
 ### 비용
 - 분석 1건당: ~₩2원 (Gemini Flash)
