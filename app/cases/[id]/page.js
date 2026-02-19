@@ -25,6 +25,7 @@ import TimelineEditor from '@/app/components/TimelineEditor'
 import AnalysisCompareView from '@/app/components/AnalysisCompareView'
 import ChunkViewer from '@/app/components/ChunkViewer'
 import EvidenceClassifier from '@/app/components/EvidenceClassifier'
+import { OPINION_TYPES, OPINION_MODELS } from '@/lib/opinionPrompts'
 
 export default function CaseDetailPage() {
   const params = useParams()
@@ -34,6 +35,7 @@ export default function CaseDetailPage() {
   const [caseData, setCaseData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [selectedFiles, setSelectedFiles] = useState([])
+  const [ocrOutputFormat, setOcrOutputFormat] = useState('text')
   const [isUploading, setIsUploading] = useState(false)
   const [uploadMessage, setUploadMessage] = useState(null)
   const [selectedDocs, setSelectedDocs] = useState([])
@@ -74,6 +76,15 @@ export default function CaseDetailPage() {
   const [inlineChunkData, setInlineChunkData] = useState(null)
   const [inlineChunkLoading, setInlineChunkLoading] = useState(false)
   const [evidenceSections, setEvidenceSections] = useState([])
+  const [opinionModalOpen, setOpinionModalOpen] = useState(false)
+  const [opinionType, setOpinionType] = useState('sentencing')
+  const [opinionModel, setOpinionModel] = useState('gemini-2.5-flash')
+  const [opinionUserPrompt, setOpinionUserPrompt] = useState('')
+  const [referenceCandidates, setReferenceCandidates] = useState([])
+  const [referenceCandidatesLoading, setReferenceCandidatesLoading] = useState(false)
+  const [selectedReferenceIds, setSelectedReferenceIds] = useState([])
+  const [opinionGenerating, setOpinionGenerating] = useState(false)
+  const [opinionResult, setOpinionResult] = useState(null)
   const fileInputRef = useRef(null)
 
   useEffect(() => {
@@ -258,6 +269,7 @@ export default function CaseDetailPage() {
 
         const formData = new FormData()
         formData.append('document', file)
+        formData.append('outputFormat', ocrOutputFormat)
 
         const ocrRes = await fetch('/api/ocr', {
           method: 'POST',
@@ -270,7 +282,7 @@ export default function CaseDetailPage() {
           throw new Error(`${file.name}: ${ocrJson.error ?? 'OCR 실패'}`)
         }
 
-        if (ocrJson.success && ocrJson.text) {
+        if (ocrJson.success && ocrJson.txtFileUrl) {
           const docId = await saveDocument({
             pdfUrl: pdfUrlData.publicUrl,
             txtUrl: ocrJson.txtFileUrl,
@@ -334,14 +346,58 @@ export default function CaseDetailPage() {
         ids.includes(d.id)
       )
 
+      // 증거기록 분류와 동일하게 페이지별 텍스트 사용 (pageTexts 있으면 페이지 명시, 없으면 원문 통째로)
       const texts = []
-      for (const doc of selectedDocuments) {
-        if (doc.txt_url) {
+      for (let i = 0; i < selectedDocuments.length; i++) {
+        const doc = selectedDocuments[i]
+        if (!doc.txt_url) continue
+        let pageTexts = null
+        if (doc.txt_file_name) {
+          const timestamp = doc.txt_file_name.replace(/\.txt$/i, '')
+          const pageJsonUrl = doc.txt_url.replace(doc.txt_file_name, `${timestamp}_pages.json`)
+          try {
+            const ptRes = await fetch(pageJsonUrl)
+            if (ptRes.ok) {
+              const pageJson = await ptRes.json()
+              if (pageJson && typeof pageJson === 'object' && Object.keys(pageJson).length > 0) {
+                pageTexts = pageJson
+              }
+            }
+          } catch (_) {}
+        }
+        if (pageTexts) {
+          const pageNumbers = Object.keys(pageTexts)
+            .map((n) => parseInt(n, 10))
+            .filter((n) => !Number.isNaN(n))
+            .sort((a, b) => a - b)
+          const parts = pageNumbers.map(
+            (p) => `[문서 ${i + 1} - ${p}페이지]\n${(pageTexts[String(p)] ?? '').trim()}`
+          )
+          texts.push(parts.join('\n\n'))
+        } else {
           const res = await fetch(doc.txt_url)
           const text = await res.text()
           texts.push(text)
         }
       }
+
+      // 선택한 문서에 해당하는 증거기록 분류·분석만 참고용으로 전달 (분석 안 한 섹션은 분류만 포함)
+      const sectionsForSelected = (evidenceSections || []).filter((s) =>
+        ids.includes(s.document_id)
+      )
+      const evidenceContext =
+        sectionsForSelected.length > 0
+          ? {
+              sections: sectionsForSelected.map((s) => ({
+                section_title: s.section_title,
+                section_type: s.section_type,
+                start_page: s.start_page,
+                end_page: s.end_page,
+                extracted_text: s.extracted_text,
+                analysis_result: s.analysis_result ?? null,
+              })),
+            }
+          : null
 
       const res = await fetch('/api/analyze-integrated', {
         method: 'POST',
@@ -352,6 +408,7 @@ export default function CaseDetailPage() {
           caseId: caseId,
           userContext: caseContext,
           caseType: caseData.case_type,
+          evidenceContext,
         }),
       })
 
@@ -524,6 +581,64 @@ export default function CaseDetailPage() {
     }
   }
 
+  async function fetchReferenceCandidates() {
+    if (!selectedAnalysis?.result) return
+    setReferenceCandidatesLoading(true)
+    try {
+      const res = await fetch('/api/opinion/reference-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          analysis: selectedAnalysis.result,
+          opinionType,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || '참고자료 조회 실패')
+      setReferenceCandidates(data.chunks || [])
+      setSelectedReferenceIds([])
+    } catch (err) {
+      setToast({ message: err.message || '참고자료 후보를 불러오지 못했습니다.', type: 'error' })
+    } finally {
+      setReferenceCandidatesLoading(false)
+    }
+  }
+
+  function toggleReferenceId(id) {
+    setSelectedReferenceIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    )
+  }
+
+  async function generateOpinion() {
+    if (!selectedAnalysis?.result) return
+    setOpinionGenerating(true)
+    setOpinionResult(null)
+    try {
+      const selectedChunks = referenceCandidates.filter((c) => selectedReferenceIds.includes(c.id))
+      const res = await fetch('/api/opinion/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          analysis: selectedAnalysis.result,
+          userContext: caseContext,
+          opinionType,
+          userPrompt: opinionUserPrompt.trim() || undefined,
+          model: opinionModel,
+          selectedReferenceChunks: selectedChunks.length > 0 ? selectedChunks : undefined,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || '의견서 생성 실패')
+      setOpinionResult(data.opinion)
+      setToast({ message: '의견서가 생성되었습니다.', type: 'success' })
+    } catch (err) {
+      setToast({ message: err.message || '의견서 생성에 실패했습니다.', type: 'error' })
+    } finally {
+      setOpinionGenerating(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen flex flex-col bg-white">
@@ -557,9 +672,12 @@ export default function CaseDetailPage() {
       {confirmDialog && (
         <ConfirmDialog isOpen {...confirmDialog} />
       )}
-      <header className="flex h-14 items-center px-6 bg-[#1e3a5f]">
+      <header className="flex h-14 items-center justify-between px-6 bg-[#1e3a5f]">
         <Link href="/cases" className="text-xl font-bold text-white">
           ASSO
+        </Link>
+        <Link href="/reference-documents" className="text-white/90 hover:text-white text-sm">
+          참고자료 관리
         </Link>
       </header>
 
@@ -786,6 +904,36 @@ export default function CaseDetailPage() {
 
             {selectedFiles.length > 0 && (
               <div className="mt-4">
+                <p className="text-sm font-medium mb-2">
+                  OCR 출력 형식
+                </p>
+                <div className="flex gap-4 mb-4">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="ocrOutputFormat"
+                      value="text"
+                      checked={ocrOutputFormat === 'text'}
+                      onChange={() => setOcrOutputFormat('text')}
+                      className="text-blue-600"
+                    />
+                    <span className="text-sm">텍스트 (기본)</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="ocrOutputFormat"
+                      value="html"
+                      checked={ocrOutputFormat === 'html'}
+                      onChange={() => setOcrOutputFormat('html')}
+                      className="text-blue-600"
+                    />
+                    <span className="text-sm">HTML (표 구조 유지)</span>
+                  </label>
+                </div>
+                <p className="text-xs text-zinc-500 mb-4">
+                  표가 있는 문서는 HTML을 선택하면 행·열 구조가 보존됩니다. 화면에는 태그 제외 텍스트로 표시됩니다.
+                </p>
                 <p className="text-sm font-medium mb-2">
                   선택된 파일 ({selectedFiles.length}개)
                 </p>
@@ -1402,6 +1550,18 @@ export default function CaseDetailPage() {
                           취소
                         </button>
                       )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOpinionResult(null)
+                          setReferenceCandidates([])
+                          setSelectedReferenceIds([])
+                          setOpinionModalOpen(true)
+                        }}
+                        className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
+                      >
+                        의견서 작성
+                      </button>
                     </div>
                   </div>
 
@@ -1705,6 +1865,161 @@ export default function CaseDetailPage() {
           )}
         </div>
       </main>
+
+      {opinionModalOpen && selectedAnalysis && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+            <div className="p-4 border-b flex items-center justify-between">
+              <h3 className="text-lg font-semibold">의견서 작성</h3>
+              <button
+                type="button"
+                onClick={() => setOpinionModalOpen(false)}
+                className="p-2 text-zinc-500 hover:text-zinc-700 rounded-lg"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto flex-1 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 mb-1">의견서 종류</label>
+                <select
+                  value={opinionType}
+                  onChange={(e) => setOpinionType(e.target.value)}
+                  className="w-full px-3 py-2 border border-zinc-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  {Object.entries(OPINION_TYPES).map(([k, v]) => (
+                    <option key={k} value={k}>{v.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 mb-1">AI 모델</label>
+                <select
+                  value={opinionModel}
+                  onChange={(e) => setOpinionModel(e.target.value)}
+                  className="w-full px-3 py-2 border border-zinc-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  {OPINION_MODELS.map((m) => (
+                    <option key={m.id} value={m.id}>{m.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 mb-1">추가 지시 (선택)</label>
+                <textarea
+                  value={opinionUserPrompt}
+                  onChange={(e) => setOpinionUserPrompt(e.target.value)}
+                  placeholder="예: 피고인의 반성 정도를 강조해 주세요"
+                  className="w-full px-3 py-2 border border-zinc-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                  rows={2}
+                />
+              </div>
+
+              <div className="border-t pt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-sm font-medium text-zinc-700">프롬프트에 넣을 참고자료</label>
+                  <button
+                    type="button"
+                    onClick={fetchReferenceCandidates}
+                    disabled={referenceCandidatesLoading}
+                    className="px-3 py-1.5 text-sm bg-zinc-100 text-zinc-700 rounded-lg hover:bg-zinc-200 disabled:opacity-50"
+                  >
+                    {referenceCandidatesLoading ? '불러오는 중…' : '참고자료 후보 불러오기'}
+                  </button>
+                </div>
+                {referenceCandidates.length > 0 && (
+                  <div className="space-y-2 max-h-48 overflow-y-auto border rounded-lg p-2 bg-zinc-50">
+                    <div className="flex gap-2 text-xs text-zinc-500 mb-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedReferenceIds(referenceCandidates.map((c) => c.id))}
+                        className="underline hover:text-indigo-600"
+                      >
+                        전체 선택
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedReferenceIds([])}
+                        className="underline hover:text-indigo-600"
+                      >
+                        전체 해제
+                      </button>
+                      <span className="ml-2">
+                        {selectedReferenceIds.length}개 선택됨
+                      </span>
+                    </div>
+                    {referenceCandidates.map((c) => {
+                      const meta = c.metadata || {}
+                      const label = [meta.topic, meta.crime_type].filter(Boolean).join(' · ') || '참고자료'
+                      return (
+                        <label
+                          key={c.id}
+                          className="flex gap-2 p-2 bg-white border rounded cursor-pointer hover:bg-indigo-50/50"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedReferenceIds.includes(c.id)}
+                            onChange={() => toggleReferenceId(c.id)}
+                            className="mt-1 shrink-0"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <span className="text-xs font-medium text-indigo-700">{label}</span>
+                            <p className="text-sm text-zinc-700 mt-0.5 line-clamp-2">
+                              {(c.content || '').slice(0, 180)}
+                              {(c.content || '').length > 180 ? '…' : ''}
+                            </p>
+                          </div>
+                        </label>
+                      )
+                    })}
+                  </div>
+                )}
+                {referenceCandidates.length === 0 && !referenceCandidatesLoading && (
+                  <p className="text-sm text-zinc-500">
+                    「참고자료 후보 불러오기」를 누르면 이 의견서/분석에 맞는 참고자료를 검색합니다. 넣을 항목만 선택한 뒤 의견서를 생성하세요.
+                  </p>
+                )}
+              </div>
+
+              {opinionResult && (
+                <div className="border-t pt-4 space-y-2">
+                  <h4 className="font-medium text-zinc-800">{opinionResult.title}</h4>
+                  <div className="p-3 bg-zinc-50 rounded-lg text-sm text-zinc-700 whitespace-pre-wrap max-h-60 overflow-y-auto">
+                    {opinionResult.body}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(opinionResult.body)
+                      setToast({ message: '본문이 클립보드에 복사되었습니다.', type: 'success' })
+                    }}
+                    className="px-3 py-1.5 text-sm border border-zinc-300 rounded-lg hover:bg-zinc-100"
+                  >
+                    본문 복사
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="p-4 border-t flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setOpinionModalOpen(false)}
+                className="px-4 py-2 text-zinc-600 hover:bg-zinc-100 rounded-lg"
+              >
+                닫기
+              </button>
+              <button
+                type="button"
+                onClick={generateOpinion}
+                disabled={opinionGenerating}
+                className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {opinionGenerating ? '생성 중…' : '의견서 생성'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <ChunkViewer
         isOpen={chunkViewerOpen}

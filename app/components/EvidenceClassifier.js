@@ -43,6 +43,26 @@ export default function EvidenceClassifier({
   const [analyzingSection, setAnalyzingSection] = useState(null)
   const [viewingAnalysis, setViewingAnalysis] = useState(null)
   const [describingWithVision, setDescribingWithVision] = useState(null)
+  const [deletingDocId, setDeletingDocId] = useState(null)
+
+  // 증거기록 분류 삭제 (해당 문서의 분류·분석 전부 삭제)
+  const handleDeleteClassification = async (documentId) => {
+    if (!confirm('이 문서의 증거기록 분류와 분석 결과를 모두 삭제할까요? 삭제 후에도 다시 분류할 수 있습니다.')) return
+    setDeletingDocId(documentId)
+    try {
+      const res = await fetch(`/api/documents/${documentId}/evidence-classification`, {
+        method: 'DELETE',
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || '삭제 실패')
+      onToast?.({ type: 'success', message: '증거기록 분류가 삭제되었습니다.' })
+      onSectionsChange?.()
+    } catch (err) {
+      onToast?.({ type: 'error', message: err.message })
+    } finally {
+      setDeletingDocId(null)
+    }
+  }
 
   // 증거기록 분류 시작
   const handleClassify = async (documentId) => {
@@ -210,14 +230,26 @@ export default function EvidenceClassifier({
                 <span className="text-lg">📄</span>
                 <span className="font-medium truncate">{doc.original_file_name}</span>
               </div>
-              <button
-                type="button"
-                onClick={() => handleClassify(doc.id)}
-                disabled={classifying}
-                className="px-4 py-1.5 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
-              >
-                {isClassifying ? '분류 중...' : hasClassification ? '재분류' : '증거기록 분류'}
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {hasClassification && (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteClassification(doc.id)}
+                    disabled={classifying || deletingDocId === doc.id}
+                    className="px-3 py-1.5 text-sm border border-red-300 text-red-700 rounded-lg hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {deletingDocId === doc.id ? '삭제 중...' : '분류 삭제'}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => handleClassify(doc.id)}
+                  disabled={classifying}
+                  className="px-4 py-1.5 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isClassifying ? '분류 중...' : hasClassification ? '재분류' : '증거기록 분류'}
+                </button>
+              </div>
             </div>
 
             {/* 분류 진행 상태 */}

@@ -11,7 +11,7 @@ export async function POST(request) {
       )
     }
 
-    const { texts, documentIds, caseId, userContext, caseType } =
+    const { texts, documentIds, caseId, userContext, caseType, evidenceContext } =
       await request.json()
 
     if (!texts || texts.length === 0) {
@@ -71,18 +71,38 @@ export async function POST(request) {
       systemPrompt += `\n\n중점 검토 사항:\n${userContext.focus_areas}`
     }
 
+    // 증거기록 분류·분석 참고 자료 (있을 때만). 분류는 모두, 분석은 있는 것만 포함.
+    let evidenceReferenceBlock = ''
+    if (evidenceContext?.sections?.length > 0) {
+      const MAX_EXTRACT_PER_SECTION = 2500
+      evidenceReferenceBlock = `\n\n아래는 이미 증거기록으로 분류된 내용과, 분석이 완료된 섹션의 분석 결과입니다. 통합 분석 시 이를 참고하되, 다음에 나오는 수사기록 원문과 상호보완하여 작성하세요. (분석이 없는 섹션은 분류 정보만 참고)\n\n`
+      evidenceContext.sections.forEach((s, idx) => {
+        evidenceReferenceBlock += `--- 증거 섹션 ${idx + 1}: ${s.section_title || s.section_type} (유형: ${s.section_type}, p.${s.start_page}-${s.end_page}) ---\n`
+        if (s.extracted_text?.trim()) {
+          const excerpt = s.extracted_text.length > MAX_EXTRACT_PER_SECTION
+            ? s.extracted_text.substring(0, MAX_EXTRACT_PER_SECTION) + '...'
+            : s.extracted_text
+          evidenceReferenceBlock += `[발췌]\n${excerpt}\n\n`
+        }
+        if (s.analysis_result != null && typeof s.analysis_result === 'object') {
+          evidenceReferenceBlock += `[섹션 분석 결과]\n${JSON.stringify(s.analysis_result, null, 2)}\n\n`
+        }
+      })
+      evidenceReferenceBlock += '--- 위 증거기록 분류·분석 참고 끝 ---\n\n'
+    }
+
     const PROMPT = `${systemPrompt}
 
-다음은 여러 수사기록 문서입니다. 이들을 종합적으로 분석하여 JSON 형식으로 반환하세요:
+다음은 여러 수사기록 문서입니다. 이들을 종합적으로 분석하여 JSON 형식으로 반환하세요.
+${evidenceReferenceBlock ? `\n${evidenceReferenceBlock}` : ''}
 
 {{TEXT}}
 
 **중요: 모든 타임라인 이벤트와 증거에는 반드시 페이지 번호를 포함해야 합니다.**
 
-텍스트에서 <footer> 태그의 숫자를 페이지 번호로 사용하세요.
-예시:
-- <footer id='52' style='font-size:22px'>19.</footer> → page: 19
-- <footer id='87' style='font-size:22px'>200</footer> → page: 200
+페이지 번호는 다음 순서로 사용하세요.
+1) 원문에 "[문서 N - k페이지]" 표기가 있으면, 해당 구간의 내용은 반드시 page: k 로 참조하세요. 문서에 나온 페이지 번호만 사용하고, 원문에 없는 페이지(예: 33페이지 문서에 34, 35페이지)를 만들지 마세요.
+2) "[문서 N - k페이지]" 표기가 없으면 <footer> 태그의 숫자를 참고하세요.
 
 반환 형식 (JSON만):
 {
