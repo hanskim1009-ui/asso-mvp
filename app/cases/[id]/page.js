@@ -36,6 +36,7 @@ export default function CaseDetailPage() {
   const [loading, setLoading] = useState(true)
   const [selectedFiles, setSelectedFiles] = useState([])
   const [ocrOutputFormat, setOcrOutputFormat] = useState('text')
+  const [ocrIncludeCoordinates, setOcrIncludeCoordinates] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [uploadMessage, setUploadMessage] = useState(null)
   const [selectedDocs, setSelectedDocs] = useState([])
@@ -85,6 +86,8 @@ export default function CaseDetailPage() {
   const [selectedReferenceIds, setSelectedReferenceIds] = useState([])
   const [opinionGenerating, setOpinionGenerating] = useState(false)
   const [opinionResult, setOpinionResult] = useState(null)
+  const [analysisPdfViewer, setAnalysisPdfViewer] = useState(null) // { pdfUrl, pageNumber, documentName }
+  const [analysisPdfZoom, setAnalysisPdfZoom] = useState(120) // 기본 조금 크게 (가독성)
   const fileInputRef = useRef(null)
 
   useEffect(() => {
@@ -95,6 +98,8 @@ export default function CaseDetailPage() {
     if (selectedAnalysis) {
       setEditedAnalysis(selectedAnalysis.result)
       setEditingAnalysis(false)
+      setAnalysisPdfViewer(null)
+      setAnalysisPdfZoom(120)
       isGoodExample(selectedAnalysis.id).then(setIsMarkedAsGood)
     }
   }, [selectedAnalysis])
@@ -270,6 +275,7 @@ export default function CaseDetailPage() {
         const formData = new FormData()
         formData.append('document', file)
         formData.append('outputFormat', ocrOutputFormat)
+        formData.append('includeCoordinates', ocrIncludeCoordinates ? 'true' : 'false')
 
         const ocrRes = await fetch('/api/ocr', {
           method: 'POST',
@@ -468,6 +474,26 @@ export default function CaseDetailPage() {
     setChunkViewerPage(null)
     setChunkViewerHighlight('')
     setInlineChunkData(null)
+  }
+
+  /** 분석 상세에서 페이지 참조 클릭 시 오른쪽에 PDF 페이지 표시 (문서명 있으면 해당 문서, 없으면 분석의 첫 문서) */
+  function openAnalysisPdf(pageNumber, sourceDocumentName) {
+    if (!selectedAnalysis || !caseData?.documents?.length || pageNumber == null) return
+    const docIds =
+      selectedAnalysis.result?.document_ids ??
+      (selectedAnalysis.document_id ? [selectedAnalysis.document_id] : caseData.documents.map((d) => d.id))
+    const doc = sourceDocumentName
+      ? caseData.documents.find(
+          (d) => d.original_file_name === sourceDocumentName || d.original_file_name?.includes(sourceDocumentName)
+        )
+      : null
+    const targetDoc = doc || caseData.documents.find((d) => docIds.includes(d.id))
+    if (!targetDoc?.pdf_url) return
+    setAnalysisPdfViewer({
+      pdfUrl: targetDoc.pdf_url,
+      pageNumber: Number(pageNumber),
+      documentName: targetDoc.original_file_name || '문서',
+    })
   }
 
   function renderChunkContentWithHighlight(content, keyword) {
@@ -930,9 +956,19 @@ export default function CaseDetailPage() {
                     />
                     <span className="text-sm">HTML (표 구조 유지)</span>
                   </label>
+                  <label className="flex items-center gap-2 cursor-pointer ml-2 border-l border-zinc-300 pl-4">
+                    <input
+                      type="checkbox"
+                      checked={ocrIncludeCoordinates}
+                      onChange={(e) => setOcrIncludeCoordinates(e.target.checked)}
+                      className="text-blue-600 rounded"
+                    />
+                    <span className="text-sm">좌표 포함 (coordinates)</span>
+                  </label>
                 </div>
                 <p className="text-xs text-zinc-500 mb-4">
                   표가 있는 문서는 HTML을 선택하면 행·열 구조가 보존됩니다. 화면에는 태그 제외 텍스트로 표시됩니다.
+                  좌표 포함을 켜면 OCR 결과에 요소 위치 정보가 포함됩니다(이미지 PDF 위 텍스트 오버레이 등에 활용).
                 </p>
                 <p className="text-sm font-medium mb-2">
                   선택된 파일 ({selectedFiles.length}개)
@@ -1645,8 +1681,16 @@ export default function CaseDetailPage() {
                               </span>
                               <div className="flex-1 min-w-0">
                                 <span className="text-zinc-700">{ev.description}</span>
-                                {ev.page && (
-                                  <div className="text-xs text-blue-600 mt-0.5">📄 p.{ev.page}</div>
+                                {ev.page != null && (
+                                  <div className="text-xs mt-0.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => openAnalysisPdf(ev.page, null)}
+                                      className="text-blue-600 hover:underline cursor-pointer"
+                                    >
+                                      📄 p.{ev.page}
+                                    </button>
+                                  </div>
                                 )}
                                 {ev.note && (
                                   <div className="mt-2 text-sm text-zinc-600 bg-blue-50/80 border-l-2 border-blue-200 pl-2 py-1 rounded-r">
@@ -1715,6 +1759,7 @@ export default function CaseDetailPage() {
                         ) : (
                           <Timeline
                             events={selectedAnalysis.result?.timeline}
+                            onPageClick={openAnalysisPdf}
                           />
                         )}
                       </div>
@@ -1865,6 +1910,86 @@ export default function CaseDetailPage() {
           )}
         </div>
       </main>
+
+      {/* 분석 참조 PDF 뷰어: 분석 상세 칸 밖, 화면 오른쪽 고정. 넓은 패널 + 페이지/확대 UI */}
+      {analysisPdfViewer && (
+        <div className="fixed top-0 right-0 bottom-0 w-[min(560px,55vw)] z-40 flex flex-col bg-white border-l-2 border-zinc-200 shadow-xl">
+          {/* 상단바: 첫 번째 스크린샷처럼 페이지 표시 + 이동 + 확대/축소 + 닫기 */}
+          <div className="shrink-0 flex items-center gap-3 px-3 py-2 bg-zinc-700 text-white">
+            <span className="text-sm truncate min-w-0 flex-1" title={analysisPdfViewer.documentName}>
+              {analysisPdfViewer.documentName}
+            </span>
+            <div className="flex items-center gap-1 shrink-0 border-l border-zinc-500 pl-2">
+              <span className="text-xs text-zinc-400 mr-0.5">페이지</span>
+              <span className="inline-flex items-center justify-center min-w-[2rem] px-2 py-1 rounded bg-zinc-600 text-sm font-medium tabular-nums">
+                {analysisPdfViewer.pageNumber}
+              </span>
+              <span className="text-zinc-500 mx-0.5">/</span>
+              <span className="text-zinc-500 text-xs">?</span>
+            </div>
+            <div className="flex items-center gap-0.5 shrink-0 border-l border-zinc-500 pl-2">
+              <button
+                type="button"
+                onClick={() =>
+                  setAnalysisPdfViewer((prev) =>
+                    prev.pageNumber <= 1 ? prev : { ...prev, pageNumber: prev.pageNumber - 1 }
+                  )
+                }
+                className="p-1.5 rounded hover:bg-zinc-600 text-white"
+                title="이전 페이지"
+              >
+                ←
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setAnalysisPdfViewer((prev) => ({ ...prev, pageNumber: prev.pageNumber + 1 }))
+                }
+                className="p-1.5 rounded hover:bg-zinc-600 text-white"
+                title="다음 페이지"
+              >
+                →
+              </button>
+            </div>
+            <div className="flex items-center gap-0.5 shrink-0 border-l border-zinc-500 pl-2">
+              <button
+                type="button"
+                onClick={() => setAnalysisPdfZoom((z) => Math.max(50, z - 25))}
+                className="p-1.5 rounded hover:bg-zinc-600 text-white font-medium"
+                title="축소"
+              >
+                −
+              </button>
+              <span className="text-xs tabular-nums min-w-[2.5rem] text-center">{analysisPdfZoom}%</span>
+              <button
+                type="button"
+                onClick={() => setAnalysisPdfZoom((z) => Math.min(200, z + 25))}
+                className="p-1.5 rounded hover:bg-zinc-600 text-white font-medium"
+                title="확대"
+              >
+                +
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAnalysisPdfViewer(null)}
+              className="p-1.5 rounded hover:bg-zinc-600 text-white shrink-0"
+              title="닫기"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="flex-1 min-h-0 bg-zinc-100 flex flex-col">
+            <iframe
+              key={`${analysisPdfViewer.pageNumber}-${analysisPdfZoom}`}
+              src={`${analysisPdfViewer.pdfUrl}#page=${analysisPdfViewer.pageNumber}&zoom=${analysisPdfZoom}`}
+              className="w-full h-full min-h-0 border-0"
+              style={{ height: 'calc(100vh - 48px)' }}
+              title="분석 참조 PDF"
+            />
+          </div>
+        </div>
+      )}
 
       {opinionModalOpen && selectedAnalysis && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">

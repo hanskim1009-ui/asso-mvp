@@ -11,7 +11,9 @@ export async function POST(request) {
     const formData = await request.formData()
     const file = formData.get('document')
     const originalFileName = formData.get('originalFileName')
-    
+    const outputFormat = (formData.get('outputFormat') || 'text').toString().toLowerCase()
+    const includeCoordinates = formData.get('includeCoordinates') === 'true'
+
     if (!file) {
       return NextResponse.json(
         { error: '파일이 필요합니다' },
@@ -20,11 +22,14 @@ export async function POST(request) {
     }
 
     console.log('=== OCR 시작 ===')
-    console.log('파일명:', file.name)
+    console.log('파일명:', file.name, '| coordinates:', includeCoordinates)
 
     // 1. Upstage OCR
     const upstageFormData = new FormData()
     upstageFormData.append('document', file)
+    if (includeCoordinates) {
+      upstageFormData.append('coordinates', 'true')
+    }
 
     const response = await fetch('https://api.upstage.ai/v1/document-ai/document-parse', {
       method: 'POST',
@@ -41,20 +46,29 @@ export async function POST(request) {
     }
 
     const data = JSON.parse(responseText)
-    
-    const extractedText = 
-      data.content?.text ||
-      data.text ||
-      data.content?.html ||
-      data.html ||
-      JSON.stringify(data)
-    
-    console.log('OCR 완료! 텍스트 길이:', extractedText.length)
 
-    // elements 배열에서 페이지별 텍스트 추출
+    const extractedText =
+      outputFormat === 'html'
+        ? (data.content?.html ?? data.html ?? data.content?.text ?? data.text ?? JSON.stringify(data))
+        : (data.content?.text ?? data.text ?? data.content?.html ?? data.html ?? JSON.stringify(data))
+
+    console.log('OCR 완료! 출력 형식:', outputFormat, '길이:', extractedText.length)
+
+    // elements 배열에서 페이지별 텍스트 추출 + 좌표 포함 시 구조 로그
     let pageTexts = null
     const elements = data.elements || data.content?.elements || []
     if (elements.length > 0) {
+      const first = elements[0]
+      console.log('[OCR elements] 개수:', elements.length, '| 첫 element 키:', Object.keys(first))
+      if (first.coordinates != null) {
+        console.log('[OCR elements] 첫 element.coordinates:', JSON.stringify(first.coordinates))
+      }
+      if (first.bounding_box != null) {
+        console.log('[OCR elements] 첫 element.bounding_box:', JSON.stringify(first.bounding_box))
+      }
+      if (first.bbox != null) {
+        console.log('[OCR elements] 첫 element.bbox:', JSON.stringify(first.bbox))
+      }
       const pageMap = new Map()
       for (const el of elements) {
         const pageNum = el.page ?? el.page_id ?? el.pageNumber ?? null
@@ -131,7 +145,8 @@ export async function POST(request) {
       txtFileUrl: txtUrlData?.publicUrl,
       txtFileName: txtFileName,
       pageTextsUrl,
-      rawData: data
+      outputFormat: outputFormat === 'html' ? 'html' : 'text',
+      rawData: data,
     })
     
   } catch (error) {

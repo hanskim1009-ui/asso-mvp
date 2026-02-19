@@ -1,6 +1,6 @@
 "use client"
 
-export default function Timeline({ events }) {
+export default function Timeline({ events, onPageClick }) {
   if (!events || events.length === 0) {
     return (
       <div className="text-center py-8 text-zinc-500">
@@ -66,10 +66,20 @@ export default function Timeline({ events }) {
                         <span className="text-xs bg-zinc-100 text-zinc-700 px-2 py-1 rounded">
                           📄 {event.source}
                         </span>
-                        {event.page && (
-                          <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs font-medium">
-                            p.{event.page}
-                          </span>
+                        {event.page != null && (
+                          onPageClick ? (
+                            <button
+                              type="button"
+                              onClick={() => onPageClick(event.page, event.source)}
+                              className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs font-medium hover:bg-blue-200 cursor-pointer"
+                            >
+                              p.{event.page}
+                            </button>
+                          ) : (
+                            <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs font-medium">
+                              p.{event.page}
+                            </span>
+                          )
                         )}
                       </div>
                     )}

@@ -44,12 +44,20 @@ export default function CasesPage() {
         <Link href="/" className="text-xl font-bold text-white">
           ASSO
         </Link>
-        <Link
-          href="/cases/new"
-          className="px-4 py-2 bg-white text-[#1e3a5f] rounded-md text-sm font-medium"
-        >
-          새 사건 만들기
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link
+            href="/reference-documents"
+            className="text-white/90 hover:text-white text-sm"
+          >
+            참고자료 관리
+          </Link>
+          <Link
+            href="/cases/new"
+            className="px-4 py-2 bg-white text-[#1e3a5f] rounded-md text-sm font-medium"
+          >
+            새 사건 만들기
+          </Link>
+        </div>
       </header>
 
       {/* 메인 */}

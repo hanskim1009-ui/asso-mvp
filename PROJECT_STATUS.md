@@ -32,6 +32,11 @@
   - 문서별 「분류 삭제」 버튼 → 해당 문서의 evidence_sections, page_classifications 전부 삭제 (API: `DELETE /api/documents/[id]/evidence-classification`)
 - **문서 업로드 (2026-02-20)**
   - 「텍스트 (기본)」 선택 시 업로드·OCR·청킹이 되지 않던 현상 수정 (저장 조건을 `txtFileUrl` 기준으로 변경)
+  - **OCR 좌표 포함 옵션**: 업로드 시 「좌표 포함 (coordinates)」 체크 시 Upstage에 coordinates: true 전달 (텍스트 레이어 구현 기반)
+- **분석 상세 PDF 뷰어 (2026-02-20)**
+  - 타임라인·증거의 페이지 참조(p.N) 클릭 시 **분석 상세 칸 밖** 오른쪽에 PDF 뷰어 고정
+  - 넓은 패널(min(560px,55vw)), 페이지 표시·이전/다음·확대/축소, 진한 툴바 스타일
+- **텍스트 레이어 오버레이**: 원문 키워드 검색 뷰어에 OCR 텍스트 겹치기 시도 후 전면 revert (내일 재시도 예정)
 
 ### 비용
 - 분석 1건당: ~₩2원 (Gemini Flash)
