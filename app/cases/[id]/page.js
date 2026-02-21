@@ -50,6 +50,7 @@ export default function CaseDetailPage() {
   const [editedAnalysis, setEditedAnalysis] = useState(null)
   const [refinementPrompt, setRefinementPrompt] = useState('')
   const [isRefining, setIsRefining] = useState(false)
+  const [isEntityAnalyzing, setIsEntityAnalyzing] = useState(false)
   const [editingCaseInfo, setEditingCaseInfo] = useState(false)
   const [caseContext, setCaseContext] = useState({
     representing: '',
@@ -620,6 +621,88 @@ export default function CaseDetailPage() {
     } catch (error) {
       console.error('복원 오류:', error)
       alert(`복원 실패: ${error.message}`)
+    }
+  }
+
+  async function runEntityAnalysis() {
+    if (!selectedAnalysis?.result || !caseData?.documents) return
+    const docIds =
+      selectedAnalysis.result?.document_ids ??
+      caseData.documents.map((d) => d.id)
+    const selectedDocuments = caseData.documents.filter((d) => docIds.includes(d.id))
+    if (selectedDocuments.length === 0) return
+
+    setIsEntityAnalyzing(true)
+    try {
+      const texts = []
+      for (let i = 0; i < selectedDocuments.length; i++) {
+        const doc = selectedDocuments[i]
+        if (!doc.txt_url) continue
+        let pageTexts = null
+        if (doc.txt_file_name) {
+          const timestamp = doc.txt_file_name.replace(/\.txt$/i, '')
+          const pageJsonUrl = doc.txt_url.replace(
+            doc.txt_file_name,
+            `${timestamp}_pages.json`
+          )
+          try {
+            const ptRes = await fetch(pageJsonUrl)
+            if (ptRes.ok) {
+              const pageJson = await ptRes.json()
+              if (
+                pageJson &&
+                typeof pageJson === 'object' &&
+                Object.keys(pageJson).length > 0
+              ) {
+                pageTexts = pageJson
+              }
+            }
+          } catch (_) {}
+        }
+        if (pageTexts) {
+          const pageNumbers = Object.keys(pageTexts)
+            .map((n) => parseInt(n, 10))
+            .filter((n) => !Number.isNaN(n))
+            .sort((a, b) => a - b)
+          const parts = pageNumbers.map(
+            (p) =>
+              `[문서 ${i + 1} - ${p}페이지]\n${(pageTexts[String(p)] ?? '').trim()}`
+          )
+          texts.push(parts.join('\n\n'))
+        } else {
+          const res = await fetch(doc.txt_url)
+          const text = await res.text()
+          texts.push(text)
+        }
+      }
+      if (texts.length === 0) {
+        setToast({ message: '텍스트를 불러올 수 없습니다.', type: 'error' })
+        return
+      }
+
+      const res = await fetch('/api/analyze-entities', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          analysisId: selectedAnalysis.id,
+          texts,
+          documentIds: docIds,
+          analysis: selectedAnalysis.result,
+          userContext: caseContext,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || '엔티티 분석 실패')
+
+      await loadCase()
+      const history = await getCaseAnalysisHistory(caseId)
+      const updated = history.find((a) => a.id === selectedAnalysis.id)
+      if (updated) setSelectedAnalysis(updated)
+      setToast({ message: '엔티티 분석이 완료되었습니다.', type: 'success' })
+    } catch (err) {
+      setToast({ message: '엔티티 분석 실패: ' + err.message, type: 'error' })
+    } finally {
+      setIsEntityAnalyzing(false)
     }
   }
 
@@ -1692,6 +1775,14 @@ export default function CaseDetailPage() {
                       )}
                       <button
                         type="button"
+                        onClick={runEntityAnalysis}
+                        disabled={isEntityAnalyzing}
+                        className="px-4 py-2 text-sm bg-emerald-600 text-white rounded-md hover:bg-emerald-700 disabled:opacity-50"
+                      >
+                        {isEntityAnalyzing ? '엔티티 분석 중...' : '엔티티 분석'}
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => {
                           setOpinionStep('config')
                           setOpinionOutline('')
@@ -1916,6 +2007,191 @@ export default function CaseDetailPage() {
                           </div>
                         </div>
                       )}
+
+                    {/* 엔티티 분석: 인물·장소·관계·증거물 */}
+                    {!editingAnalysis && (
+                      <div>
+                        <h4 className="font-semibold mb-3 text-zinc-900">
+                          엔티티 분석 (인물·장소·관계)
+                        </h4>
+                        {selectedAnalysis.result?.entities ? (
+                          <div className="space-y-6">
+                            {selectedAnalysis.result.entities.persons?.length > 0 && (
+                              <div>
+                                <h5 className="text-sm font-medium text-zinc-600 mb-2">인물</h5>
+                                <div className="space-y-3">
+                                  {selectedAnalysis.result.entities.persons.map((p, i) => (
+                                    <div
+                                      key={i}
+                                      className="p-3 bg-white border border-zinc-200 rounded-lg"
+                                    >
+                                      <div className="flex flex-wrap items-center gap-2 mb-1">
+                                        <span className="font-medium text-zinc-900">{p.name}</span>
+                                        <span
+                                          className={`inline-block px-2 py-0.5 text-xs font-medium rounded ${
+                                            p.role === '피고인'
+                                              ? 'bg-red-100 text-red-800'
+                                              : p.role === '피해자'
+                                                ? 'bg-orange-100 text-orange-800'
+                                                : p.role === '증인'
+                                                  ? 'bg-blue-100 text-blue-800'
+                                                  : 'bg-zinc-100 text-zinc-700'
+                                          }`}
+                                        >
+                                          {p.role}
+                                        </span>
+                                        {p.aliases?.length > 0 && (
+                                          <span className="text-xs text-zinc-500">
+                                            ({p.aliases.join(', ')})
+                                          </span>
+                                        )}
+                                      </div>
+                                      {p.description && (
+                                        <p className="text-sm text-zinc-600 mb-2">{p.description}</p>
+                                      )}
+                                      {p.key_statements?.length > 0 && (
+                                        <div className="text-sm space-y-1">
+                                          {p.key_statements.map((st, j) => (
+                                            <div key={j} className="flex gap-2">
+                                              <span className="text-zinc-500 shrink-0">
+                                                {st.source ?? ''} p.{st.page}
+                                              </span>
+                                              <button
+                                                type="button"
+                                                onClick={() => openAnalysisPdf(st.page, st.source)}
+                                                className="text-blue-600 hover:underline text-left"
+                                              >
+                                                {st.content?.slice(0, 80)}
+                                                {(st.content?.length ?? 0) > 80 ? '…' : ''}
+                                              </button>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                      {p.credibility_notes && (
+                                        <p className="text-xs text-zinc-500 mt-2 border-t border-zinc-100 pt-2">
+                                          신빙성: {p.credibility_notes}
+                                        </p>
+                                      )}
+                                      {p.pages?.length > 0 && (
+                                        <div className="flex flex-wrap gap-1 mt-2">
+                                          {p.pages.map((pg) => (
+                                            <button
+                                              key={pg}
+                                              type="button"
+                                              onClick={() => openAnalysisPdf(pg, null)}
+                                              className="text-xs px-1.5 py-0.5 bg-zinc-100 rounded hover:bg-zinc-200"
+                                            >
+                                              p.{pg}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {selectedAnalysis.result.entities.relationships?.length > 0 && (
+                              <div>
+                                <h5 className="text-sm font-medium text-zinc-600 mb-2">관계</h5>
+                                <div className="overflow-x-auto">
+                                  <table className="w-full text-sm border border-zinc-200 rounded-lg">
+                                    <thead>
+                                      <tr className="bg-zinc-50">
+                                        <th className="text-left p-2 border-b">인물1</th>
+                                        <th className="text-left p-2 border-b">인물2</th>
+                                        <th className="text-left p-2 border-b">관계</th>
+                                        <th className="text-left p-2 border-b">설명</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {selectedAnalysis.result.entities.relationships.map((r, i) => (
+                                        <tr key={i} className="border-b border-zinc-100">
+                                          <td className="p-2">{r.person1}</td>
+                                          <td className="p-2">{r.person2}</td>
+                                          <td className="p-2">{r.type}</td>
+                                          <td className="p-2 text-zinc-600">{r.description}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            )}
+                            {selectedAnalysis.result.entities.locations?.length > 0 && (
+                              <div>
+                                <h5 className="text-sm font-medium text-zinc-600 mb-2">장소</h5>
+                                <ul className="space-y-2">
+                                  {selectedAnalysis.result.entities.locations.map((loc, i) => (
+                                    <li
+                                      key={i}
+                                      className="flex flex-wrap items-center gap-2 text-sm p-2 bg-zinc-50 rounded"
+                                    >
+                                      <span className="font-medium">{loc.name}</span>
+                                      <span className="px-1.5 py-0.5 text-xs bg-zinc-200 rounded">
+                                        {loc.type}
+                                      </span>
+                                      {loc.related_events?.length > 0 && (
+                                        <span className="text-zinc-600">
+                                          {loc.related_events[0]}
+                                        </span>
+                                      )}
+                                      {loc.pages?.length > 0 && (
+                                        <span className="text-zinc-500">
+                                          p.{loc.pages.join(', ')}
+                                        </span>
+                                      )}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                            {selectedAnalysis.result.entities.evidence_items?.length > 0 && (
+                              <div>
+                                <h5 className="text-sm font-medium text-zinc-600 mb-2">증거물 (엔티티)</h5>
+                                <div className="space-y-2">
+                                  {selectedAnalysis.result.entities.evidence_items.map((ev, i) => (
+                                    <div
+                                      key={i}
+                                      className="flex flex-wrap gap-2 items-start p-2 border border-zinc-100 rounded text-sm"
+                                    >
+                                      <span className="font-medium">{ev.name}</span>
+                                      <span className="px-1.5 py-0.5 text-xs bg-zinc-100 rounded">
+                                        {ev.type}
+                                      </span>
+                                      {ev.description && (
+                                        <span className="text-zinc-600">{ev.description}</span>
+                                      )}
+                                      {ev.relevance && (
+                                        <span className="text-zinc-500 text-xs">({ev.relevance})</span>
+                                      )}
+                                      {ev.pages?.length > 0 && (
+                                        <span className="text-zinc-500">p.{ev.pages.join(', ')}</span>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="p-4 bg-zinc-50 border border-zinc-200 rounded-lg">
+                            <p className="text-sm text-zinc-600 mb-3">
+                              인물·장소·관계·증거물을 추출해 한눈에 볼 수 있습니다. 아래 버튼으로 분석을 실행하세요.
+                            </p>
+                            <button
+                              type="button"
+                              onClick={runEntityAnalysis}
+                              disabled={isEntityAnalyzing}
+                              className="px-4 py-2 text-sm bg-emerald-600 text-white rounded-md hover:bg-emerald-700 disabled:opacity-50"
+                            >
+                              {isEntityAnalyzing ? '분석 중...' : '엔티티 분석 실행'}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     {!editingAnalysis && (
                       <div className="mt-8 p-4 bg-zinc-50 rounded-lg border">

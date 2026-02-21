@@ -53,6 +53,10 @@
   - 섹션 청킹 정규식 보강(제○조, ① ②, (가) 등). `docs/RAG_TECHNIQUES_AND_IMPLEMENTATION.md` 추가.
 - **문서 업로드 — 디지털/스캔 구분 (2026-02-21)**
   - PDF 유형 선택: 스캔본(OCR) / 디지털 원본(OCR 없이 pdfjs 텍스트 추출). `POST /api/extract-pdf-text`, 사건 페이지 업로드 UI·플로우 반영.
+- **엔티티 분석 (2026-02-21)**
+  - 분석 결과에서 **인물·장소·관계·증거물** 추출. 선택한 분석 기준으로 별도 실행 후 해당 분석 result에 entities 병합 저장.
+  - API: `POST /api/analyze-entities` (analysisId, texts, documentIds, analysis, userContext) → Gemini 2.5 Flash로 persons/locations/relationships/evidence_items JSON 추출.
+  - 사건 상세: 「엔티티 분석」 버튼, 인물 카드(역할 배지·별칭·핵심 진술·신빙성 메모·p.N 링크), 관계 테이블, 장소 목록, 증거물(엔티티) 목록.
 - **기타 (2026-02-21)**
   - pdfjs CMap 경고 수정: cMapUrl을 5.4.624/files/cmaps 로 변경. 혼합 PDF 페이지 단위 처리 → FEATURES.md 보류 목록에 추가.
 
