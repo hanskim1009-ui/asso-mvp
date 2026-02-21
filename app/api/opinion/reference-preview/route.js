@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { searchReferenceChunksByText } from '@/lib/referenceChunks'
+import { searchReferenceChunksHybrid } from '@/lib/referenceChunks'
 
 /**
  * 의견서 종류 + 분석으로 RAG 검색 쿼리를 만들고, 참고자료 청크 후보를 반환.
@@ -31,7 +31,7 @@ export async function POST(request) {
 
     const query = buildRagQuery(opinionType, analysis)
     const matchCount = Math.min(Number(request.nextUrl?.searchParams?.get('limit')) || 10, 20)
-    const chunks = await searchReferenceChunksByText(query, matchCount)
+    const chunks = await searchReferenceChunksHybrid(query, matchCount)
 
     return NextResponse.json({
       success: true,

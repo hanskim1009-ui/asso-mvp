@@ -17,6 +17,7 @@ import {
   REFERENCE_DEFAULT_CHUNK_SIZE,
   REFERENCE_MAX_CHUNK_SIZE,
 } from '@/lib/chunkText'
+import { getChunkContexts } from '@/lib/contextualChunk'
 
 const TAG_PROMPT = `다음은 법률 참고자료(양형기준, 판례 등)의 한 조각입니다. 아래 JSON만 한 줄로 출력하세요. 다른 설명 없이 JSON만.
 - topic: 주제 (예: 양형기준, 판례, 증거법, 절도, 사기 등, 한두 단어)
@@ -40,6 +41,7 @@ export async function POST(request) {
     const chunkSize = chunkSizeRaw != null ? Math.max(500, Math.min(REFERENCE_MAX_CHUNK_SIZE, Number(chunkSizeRaw))) : REFERENCE_DEFAULT_CHUNK_SIZE
     const chunkBySectionsFlag = ['true', '1', 'yes'].includes(String(formData.get('chunkBySections') ?? '').toLowerCase())
     const singleChunkFlag = ['true', '1', 'yes'].includes(String(formData.get('singleChunk') ?? '').toLowerCase())
+    const skipContextualize = ['true', '1', 'yes'].includes(String(formData.get('skipContextualize') ?? '').toLowerCase())
 
     if (!file || !(file instanceof Blob)) {
       return NextResponse.json({ error: 'PDF 파일(document)이 필요합니다.' }, { status: 400 })
@@ -112,10 +114,31 @@ export async function POST(request) {
       })
     }
 
-    const rows = chunks.map((c) => ({
+    // Contextual Chunking: 각 청크에 맥락 문장 붙이기 (Anthropic 스타일, 검색 품질 향상)
+    const fullTextForContext = pageTexts
+      ? Object.keys(pageTexts)
+          .map(Number)
+          .sort((a, b) => a - b)
+          .map((n) => pageTexts[String(n)] ?? '')
+          .join('\n\n')
+      : extractedText
+    let chunkContents = chunks.map((c) => c.text)
+    if (!skipContextualize && process.env.GEMINI_API_KEY && chunks.length > 0) {
+      try {
+        const contexts = await getChunkContexts(title, fullTextForContext, chunks, 600)
+        chunkContents = chunks.map((c, i) => {
+          const ctx = contexts[i]?.trim()
+          return ctx ? `[맥락] ${ctx}\n\n${c.text}` : c.text
+        })
+      } catch (e) {
+        console.warn('Contextual chunking failed, using raw chunks:', e?.message)
+      }
+    }
+
+    const rows = chunks.map((c, i) => ({
       chunk_index: c.chunk_index,
       page_number: c.pageNumber,
-      content: c.text,
+      content: chunkContents[i] ?? c.text,
     }))
     await insertReferenceChunks(id, rows)
     const chunksCount = rows.length

@@ -54,7 +54,6 @@ export async function POST(request, context) {
           tagged++
           break
         } catch (e) {
-          lastErr = e
           const is429 = /429|Resource exhausted|Too Many Requests/i.test(String(e?.message ?? e))
           if (is429 && attempt === 0) continue
           console.warn('Chunk tag fail:', chunk.id, e.message)

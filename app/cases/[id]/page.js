@@ -35,6 +35,7 @@ export default function CaseDetailPage() {
   const [caseData, setCaseData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [selectedFiles, setSelectedFiles] = useState([])
+  const [pdfSourceType, setPdfSourceType] = useState('scanned') // 'scanned' | 'digital'
   const [ocrOutputFormat, setOcrOutputFormat] = useState('text')
   const [ocrIncludeCoordinates, setOcrIncludeCoordinates] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
@@ -275,22 +276,32 @@ export default function CaseDetailPage() {
           .from('documents')
           .getPublicUrl(fileName)
 
-        setUploadMessage(`${i + 1}/${selectedFiles.length} OCR 처리 중...`)
-
         const formData = new FormData()
         formData.append('document', file)
-        formData.append('outputFormat', ocrOutputFormat)
-        formData.append('includeCoordinates', ocrIncludeCoordinates ? 'true' : 'false')
 
-        const ocrRes = await fetch('/api/ocr', {
-          method: 'POST',
-          body: formData,
-        })
-
-        const ocrJson = await ocrRes.json()
-
-        if (!ocrRes.ok) {
-          throw new Error(`${file.name}: ${ocrJson.error ?? 'OCR 실패'}`)
+        let ocrJson
+        if (pdfSourceType === 'digital') {
+          setUploadMessage(`${i + 1}/${selectedFiles.length} 텍스트 추출 중...`)
+          const extractRes = await fetch('/api/extract-pdf-text', {
+            method: 'POST',
+            body: formData,
+          })
+          ocrJson = await extractRes.json()
+          if (!extractRes.ok) {
+            throw new Error(`${file.name}: ${ocrJson?.error ?? '텍스트 추출 실패'}`)
+          }
+        } else {
+          setUploadMessage(`${i + 1}/${selectedFiles.length} OCR 처리 중...`)
+          formData.append('outputFormat', ocrOutputFormat)
+          formData.append('includeCoordinates', ocrIncludeCoordinates ? 'true' : 'false')
+          const ocrRes = await fetch('/api/ocr', {
+            method: 'POST',
+            body: formData,
+          })
+          ocrJson = await ocrRes.json()
+          if (!ocrRes.ok) {
+            throw new Error(`${file.name}: ${ocrJson?.error ?? 'OCR 실패'}`)
+          }
         }
 
         if (ocrJson.success && ocrJson.txtFileUrl) {
@@ -989,45 +1000,80 @@ export default function CaseDetailPage() {
             {selectedFiles.length > 0 && (
               <div className="mt-4">
                 <p className="text-sm font-medium mb-2">
-                  OCR 출력 형식
+                  PDF 유형
                 </p>
                 <div className="flex gap-4 mb-4">
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="radio"
-                      name="ocrOutputFormat"
-                      value="text"
-                      checked={ocrOutputFormat === 'text'}
-                      onChange={() => setOcrOutputFormat('text')}
+                      name="pdfSourceType"
+                      value="scanned"
+                      checked={pdfSourceType === 'scanned'}
+                      onChange={() => setPdfSourceType('scanned')}
                       className="text-blue-600"
                     />
-                    <span className="text-sm">텍스트 (기본)</span>
+                    <span className="text-sm">스캔본(이미지) — OCR 사용</span>
                   </label>
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="radio"
-                      name="ocrOutputFormat"
-                      value="html"
-                      checked={ocrOutputFormat === 'html'}
-                      onChange={() => setOcrOutputFormat('html')}
+                      name="pdfSourceType"
+                      value="digital"
+                      checked={pdfSourceType === 'digital'}
+                      onChange={() => setPdfSourceType('digital')}
                       className="text-blue-600"
                     />
-                    <span className="text-sm">HTML (표 구조 유지)</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer ml-2 border-l border-zinc-300 pl-4">
-                    <input
-                      type="checkbox"
-                      checked={ocrIncludeCoordinates}
-                      onChange={(e) => setOcrIncludeCoordinates(e.target.checked)}
-                      className="text-blue-600 rounded"
-                    />
-                    <span className="text-sm">좌표 포함 (coordinates)</span>
+                    <span className="text-sm">디지털 원본 — OCR 없이 텍스트만 추출</span>
                   </label>
                 </div>
                 <p className="text-xs text-zinc-500 mb-4">
-                  표가 있는 문서는 HTML을 선택하면 행·열 구조가 보존됩니다. 화면에는 태그 제외 텍스트로 표시됩니다.
-                  좌표 포함을 켜면 OCR 결과에 요소 위치 정보가 포함됩니다(이미지 PDF 위 텍스트 오버레이 등에 활용).
+                  Word·한글 등에서 만든 PDF는 디지털 원본을 선택하면 비용·시간을 줄일 수 있습니다. 스캔한 문서·이미지 PDF는 스캔본을 선택하세요.
                 </p>
+
+                {pdfSourceType === 'scanned' && (
+                  <>
+                    <p className="text-sm font-medium mb-2">
+                      OCR 출력 형식
+                    </p>
+                    <div className="flex gap-4 mb-4">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="ocrOutputFormat"
+                          value="text"
+                          checked={ocrOutputFormat === 'text'}
+                          onChange={() => setOcrOutputFormat('text')}
+                          className="text-blue-600"
+                        />
+                        <span className="text-sm">텍스트 (기본)</span>
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="ocrOutputFormat"
+                          value="html"
+                          checked={ocrOutputFormat === 'html'}
+                          onChange={() => setOcrOutputFormat('html')}
+                          className="text-blue-600"
+                        />
+                        <span className="text-sm">HTML (표 구조 유지)</span>
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer ml-2 border-l border-zinc-300 pl-4">
+                        <input
+                          type="checkbox"
+                          checked={ocrIncludeCoordinates}
+                          onChange={(e) => setOcrIncludeCoordinates(e.target.checked)}
+                          className="text-blue-600 rounded"
+                        />
+                        <span className="text-sm">좌표 포함 (coordinates)</span>
+                      </label>
+                    </div>
+                    <p className="text-xs text-zinc-500 mb-4">
+                      표가 있는 문서는 HTML을 선택하면 행·열 구조가 보존됩니다. 화면에는 태그 제외 텍스트로 표시됩니다.
+                      좌표 포함을 켜면 OCR 결과에 요소 위치 정보가 포함됩니다(이미지 PDF 위 텍스트 오버레이 등에 활용).
+                    </p>
+                  </>
+                )}
                 <p className="text-sm font-medium mb-2">
                   선택된 파일 ({selectedFiles.length}개)
                 </p>

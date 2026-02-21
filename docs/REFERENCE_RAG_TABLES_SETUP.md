@@ -111,6 +111,106 @@ $$;
 
 - `<=>`: 코사인 거리. `1 - (<=>)`가 코사인 유사도에 해당합니다.
 
-## 6. RLS (선택)
+## 6. Hybrid Search (벡터 + 전문 검색, 선택)
+
+법률 용어·판례 번호 등 정확 매칭을 위해 벡터 검색에 전문 검색을 더할 수 있습니다. 아래 적용 후 `match_reference_chunks_hybrid` RPC를 사용하세요.
+
+### 6.1 content_tsv 컬럼 및 트리거
+
+```sql
+-- 전문 검색용 tsvector (한글 등은 'simple'로 토큰화)
+ALTER TABLE reference_chunks ADD COLUMN IF NOT EXISTS content_tsv tsvector;
+
+UPDATE reference_chunks SET content_tsv = to_tsvector('simple', coalesce(content, ''))
+WHERE content_tsv IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_reference_chunks_content_tsv
+ON reference_chunks USING gin(content_tsv);
+
+CREATE OR REPLACE FUNCTION reference_chunks_content_tsv_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  NEW.content_tsv := to_tsvector('simple', coalesce(NEW.content, ''));
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS reference_chunks_tsv_trigger ON reference_chunks;
+CREATE TRIGGER reference_chunks_tsv_trigger
+  BEFORE INSERT OR UPDATE OF content ON reference_chunks
+  FOR EACH ROW EXECUTE PROCEDURE reference_chunks_content_tsv_trigger();
+```
+
+### 6.2 Hybrid RPC (RRF 병합)
+
+```sql
+CREATE OR REPLACE FUNCTION match_reference_chunks_hybrid(
+  query_embedding vector(768),
+  query_text text,
+  match_count int DEFAULT 5
+)
+RETURNS TABLE (
+  id uuid,
+  reference_document_id uuid,
+  chunk_index int,
+  page_number int,
+  content text,
+  metadata jsonb,
+  similarity float
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  k constant float := 60.0;  -- RRF 상수
+BEGIN
+  RETURN QUERY
+  WITH
+  vector_match AS (
+    SELECT rc.id, rc.reference_document_id, rc.chunk_index, rc.page_number, rc.content, rc.metadata,
+           1 - (rc.embedding <=> query_embedding) AS sim,
+           ROW_NUMBER() OVER (ORDER BY rc.embedding <=> query_embedding) AS rn
+    FROM reference_chunks rc
+    WHERE rc.embedding IS NOT NULL
+    LIMIT match_count * 2
+  ),
+  text_match AS (
+    SELECT rc.id, rc.reference_document_id, rc.chunk_index, rc.page_number, rc.content, rc.metadata,
+           ts_rank_cd(rc.content_tsv, plainto_tsquery('simple', regexp_replace(query_text, '\s+', ' & '))) AS sim,
+           ROW_NUMBER() OVER (ORDER BY ts_rank_cd(rc.content_tsv, plainto_tsquery('simple', regexp_replace(query_text, '\s+', ' & '))) DESC) AS rn
+    FROM reference_chunks rc
+    WHERE rc.content_tsv IS NOT NULL
+      AND rc.content_tsv @@ plainto_tsquery('simple', query_text)
+    LIMIT match_count * 2
+  ),
+  combined AS (
+    SELECT v.id, v.reference_document_id, v.chunk_index, v.page_number, v.content, v.metadata,
+           (1.0 / (k + v.rn::float)) AS rrf
+    FROM vector_match v
+    UNION ALL
+    SELECT t.id, t.reference_document_id, t.chunk_index, t.page_number, t.content, t.metadata,
+           (1.0 / (k + t.rn::float)) AS rrf
+    FROM text_match t
+  ),
+  aggregated AS (
+    SELECT combined.id, combined.reference_document_id, combined.chunk_index, combined.page_number,
+           combined.content, combined.metadata, SUM(combined.rrf) AS total_rrf
+    FROM combined
+    GROUP BY combined.id, combined.reference_document_id, combined.chunk_index, combined.page_number,
+             combined.content, combined.metadata
+  )
+  SELECT a.id, a.reference_document_id, a.chunk_index, a.page_number, a.content, a.metadata,
+         a.total_rrf::float AS similarity
+  FROM aggregated a
+  ORDER BY a.total_rrf DESC
+  LIMIT match_count;
+END;
+$$;
+```
+
+- `query_text`가 비어 있거나 `content_tsv` 컬럼/트리거가 없으면 벡터 검색만 사용하는 `match_reference_chunks`를 대신 호출하는 것이 안전합니다. 앱 코드에서 hybrid RPC 실패 시 fallback 처리합니다.
+
+## 7. RLS (선택)
 
 참고자료는 현재 개발자 전용이므로, 필요 시 동일 프로젝트의 다른 테이블처럼 RLS 정책을 추가하면 됩니다.

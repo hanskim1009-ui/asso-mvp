@@ -1,6 +1,6 @@
 # ASSO MVP - 프로젝트 현황
 
-## 📊 현재 상태 (2026-02-20)
+## 📊 현재 상태 (2026-02-21)
 
 ### 개발 완료 ✅
 - Phase 1: 기본 PDF 업로드 및 AI 분석 (Gemini 2.5 Flash)
@@ -47,6 +47,14 @@
   - 참고자료(양형기준표, 판례 등) PDF 업로드 → 청킹·임베딩·메타데이터 태깅 → 벡터 검색으로 의견서 프롬프트에 삽입.
   - `reference_documents`, `reference_chunks` 설계·테이블 설정 문서: `docs/REFERENCE_RAG_DESIGN.md`, `docs/REFERENCE_RAG_TABLES_SETUP.md`.
   - 의견서 관련 테이블·학습 예시: `docs/OPINION_TABLES_SETUP.md`, `docs/OPINION_PERSISTENCE_AND_LEARNING.md`.
+- **참고자료 RAG 고도화 (2026-02-21)**
+  - Contextual Chunking: 청크 저장 전 AI 맥락 문장 붙여 검색 품질 향상. `lib/contextualChunk.js`, ingest 시 `skipContextualize` 옵션.
+  - Hybrid Search: `content_tsv` + `match_reference_chunks_hybrid` RPC(벡터+전문 검색 RRF). reference-preview에서 사용.
+  - 섹션 청킹 정규식 보강(제○조, ① ②, (가) 등). `docs/RAG_TECHNIQUES_AND_IMPLEMENTATION.md` 추가.
+- **문서 업로드 — 디지털/스캔 구분 (2026-02-21)**
+  - PDF 유형 선택: 스캔본(OCR) / 디지털 원본(OCR 없이 pdfjs 텍스트 추출). `POST /api/extract-pdf-text`, 사건 페이지 업로드 UI·플로우 반영.
+- **기타 (2026-02-21)**
+  - pdfjs CMap 경고 수정: cMapUrl을 5.4.624/files/cmaps 로 변경. 혼합 PDF 페이지 단위 처리 → FEATURES.md 보류 목록에 추가.
 
 ### 비용
 - 분석 1건당: ~₩2원 (Gemini Flash)
