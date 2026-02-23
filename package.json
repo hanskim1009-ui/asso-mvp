@@ -11,9 +11,13 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",
     "@google/generative-ai": "^0.24.1",
+    "@react-pdf/renderer": "^4.3.2",
     "@supabase/supabase-js": "^2.95.3",
     "diff": "^8.0.3",
+    "hwp.js": "^0.0.3",
+    "jszip": "^3.10.1",
     "next": "16.1.6",
+    "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.4.624",
     "react": "19.2.3",
     "react-dom": "19.2.3",

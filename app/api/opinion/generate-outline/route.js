@@ -28,7 +28,12 @@ function serializeAnalysis(analysis, userContext) {
     })
   }
   if (analysis.favorable_facts?.length) {
-    parts.push('## 유리한 정황\n' + analysis.favorable_facts.map((f) => `- ${f}`).join('\n'))
+    const factLine = (f) => {
+      const text = typeof f === 'object' && f?.fact != null ? f.fact : String(f)
+      const p = typeof f === 'object' && f?.page != null ? ` (p.${f.page})` : ''
+      return `- ${text}${p}`
+    }
+    parts.push('## 유리한 정황\n' + analysis.favorable_facts.map(factLine).join('\n'))
   }
   if (analysis.contradictions?.length) {
     parts.push(

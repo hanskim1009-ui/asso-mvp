@@ -371,12 +371,13 @@ export default function AnalysisCompareView({ left, right, onClose }) {
                     ? (rLeft.favorable_facts || []).map((s, i) => {
                         const isOlderCol = left.id === olderAnalysis.id
                         const st = highlightDiff ? listDiffStatus(olderResult.favorable_facts, newerResult.favorable_facts, i, isOlderCol ? 'older' : 'newer') : 'same'
+                        const text = typeof s === 'object' && s?.fact != null ? s.fact : String(s)
                         return (
                           <li
                             key={i}
                             className={st === 'onlyInOlder' ? 'bg-red-50 text-red-800 rounded px-1 -mx-1' : st === 'onlyInNewer' ? 'bg-green-50 text-green-800 rounded px-1 -mx-1' : ''}
                           >
-                            {s}
+                            {text}
                             {st === 'onlyInOlder' && <span className="ml-1 text-xs text-red-600">(삭제됨)</span>}
                             {st === 'onlyInNewer' && <span className="ml-1 text-xs text-green-600">(추가됨)</span>}
                           </li>
@@ -394,12 +395,13 @@ export default function AnalysisCompareView({ left, right, onClose }) {
                     ? (rRight.favorable_facts || []).map((s, i) => {
                         const isOlderCol = right.id === olderAnalysis.id
                         const st = highlightDiff ? listDiffStatus(olderResult.favorable_facts, newerResult.favorable_facts, i, isOlderCol ? 'older' : 'newer') : 'same'
+                        const text = typeof s === 'object' && s?.fact != null ? s.fact : String(s)
                         return (
                           <li
                             key={i}
                             className={st === 'onlyInOlder' ? 'bg-red-50 text-red-800 rounded px-1 -mx-1' : st === 'onlyInNewer' ? 'bg-green-50 text-green-800 rounded px-1 -mx-1' : ''}
                           >
-                            {s}
+                            {text}
                             {st === 'onlyInOlder' && <span className="ml-1 text-xs text-red-600">(삭제됨)</span>}
                             {st === 'onlyInNewer' && <span className="ml-1 text-xs text-green-600">(추가됨)</span>}
                           </li>

@@ -26,6 +26,10 @@ import AnalysisCompareView from '@/app/components/AnalysisCompareView'
 import ChunkViewer from '@/app/components/ChunkViewer'
 import EvidenceClassifier from '@/app/components/EvidenceClassifier'
 import { OPINION_TYPES, OPINION_MODELS } from '@/lib/opinionPrompts'
+import { pdf } from '@react-pdf/renderer'
+import AnalysisReportPdf from '@/app/components/AnalysisReportPdf'
+import { getPromptTemplates, fillTemplate } from '@/lib/analysisPromptTemplates'
+import { verifyAnalysisPages, verificationSummary } from '@/lib/analysisPageVerification'
 
 export default function CaseDetailPage() {
   const params = useParams()
@@ -42,6 +46,11 @@ export default function CaseDetailPage() {
   const [uploadMessage, setUploadMessage] = useState(null)
   const [selectedDocs, setSelectedDocs] = useState([])
   const [isAnalyzing, setIsAnalyzing] = useState(false)
+  const [isAnalyzingMultistage, setIsAnalyzingMultistage] = useState(false)
+  const [isAnalyzingChunked, setIsAnalyzingChunked] = useState(false)
+  const [chunkedPhase, setChunkedPhase] = useState(0)
+  const [chunkedPhaseData, setChunkedPhaseData] = useState(null)
+  const [chunkedPayload, setChunkedPayload] = useState(null)
   const [analysisResult, setAnalysisResult] = useState(null)
   const [analysisHistory, setAnalysisHistory] = useState([])
   const [selectedAnalysis, setSelectedAnalysis] = useState(null)
@@ -95,7 +104,12 @@ export default function CaseDetailPage() {
   const [opinionResult, setOpinionResult] = useState(null)
   const [analysisPdfViewer, setAnalysisPdfViewer] = useState(null) // { pdfUrl, pageNumber, documentName }
   const [analysisPdfZoom, setAnalysisPdfZoom] = useState(120) // 기본 조금 크게 (가독성)
+  const [pdfDownloading, setPdfDownloading] = useState(false)
+  const [promptDownloadOpen, setPromptDownloadOpen] = useState(false)
+  const [analysisVerification, setAnalysisVerification] = useState(null)
+  const [verificationLoading, setVerificationLoading] = useState(false)
   const fileInputRef = useRef(null)
+  const promptDownloadRef = useRef(null)
 
   useEffect(() => {
     loadCase()
@@ -107,6 +121,7 @@ export default function CaseDetailPage() {
       setEditingAnalysis(false)
       setAnalysisPdfViewer(null)
       setAnalysisPdfZoom(120)
+      setAnalysisVerification(null)
       isGoodExample(selectedAnalysis.id).then(setIsMarkedAsGood)
     }
   }, [selectedAnalysis])
@@ -134,6 +149,17 @@ export default function CaseDetailPage() {
       })
     return () => { cancelled = true }
   }, [chunkViewerChunkId, chunkViewerPage])
+
+  useEffect(() => {
+    if (!promptDownloadOpen) return
+    function onMouseDown(e) {
+      if (promptDownloadRef.current && !promptDownloadRef.current.contains(e.target)) {
+        setPromptDownloadOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    return () => document.removeEventListener('mousedown', onMouseDown)
+  }, [promptDownloadOpen])
 
   async function loadCase() {
     try {
@@ -281,7 +307,18 @@ export default function CaseDetailPage() {
         formData.append('document', file)
 
         let ocrJson
-        if (pdfSourceType === 'digital') {
+        const isHanword = /^hwp(x)?$/i.test(fileExt)
+        if (isHanword) {
+          setUploadMessage(`${i + 1}/${selectedFiles.length} 한글 문서 텍스트 추출 중...`)
+          const hwpRes = await fetch('/api/extract-hwp-text', {
+            method: 'POST',
+            body: formData,
+          })
+          ocrJson = await hwpRes.json()
+          if (!hwpRes.ok) {
+            throw new Error(`${file.name}: ${ocrJson?.error ?? '한글 문서 텍스트 추출 실패'}`)
+          }
+        } else if (pdfSourceType === 'digital') {
           setUploadMessage(`${i + 1}/${selectedFiles.length} 텍스트 추출 중...`)
           const extractRes = await fetch('/api/extract-pdf-text', {
             method: 'POST',
@@ -295,6 +332,7 @@ export default function CaseDetailPage() {
           setUploadMessage(`${i + 1}/${selectedFiles.length} OCR 처리 중...`)
           formData.append('outputFormat', ocrOutputFormat)
           formData.append('includeCoordinates', ocrIncludeCoordinates ? 'true' : 'false')
+          if (caseId) formData.append('caseId', caseId)
           const ocrRes = await fetch('/api/ocr', {
             method: 'POST',
             body: formData,
@@ -305,7 +343,31 @@ export default function CaseDetailPage() {
           }
         }
 
-        if (ocrJson.success && ocrJson.txtFileUrl) {
+        if (ocrJson.success && ocrJson.split && ocrJson.documents?.length > 0) {
+          setUploadMessage(`${i + 1}/${selectedFiles.length} 청킹 중...`)
+          for (const doc of ocrJson.documents) {
+            try {
+              const chunkRes = await fetch('/api/chunk-pdf', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  documentId: doc.id,
+                  txtUrl: doc.txtUrl,
+                  pageTextsUrl: doc.pageTextsUrl || null,
+                }),
+              })
+              const chunkData = await chunkRes.json()
+              if (chunkData.success) console.log(`청크 ${chunkData.chunksCount}개 생성됨: ${doc.id}`)
+            } catch (chunkErr) {
+              console.error('청킹 오류:', chunkErr)
+            }
+          }
+          uploadedDocs.push(...(ocrJson.documents.map((d) => ({ id: d.id, fileName: file.name }))))
+          setToast({
+            message: `${file.name}: ${ocrJson.totalPages}페이지가 ${ocrJson.parts}개 구간으로 나뉘어 업로드·OCR되었습니다.`,
+            type: 'success',
+          })
+        } else if (ocrJson.success && ocrJson.txtFileUrl) {
           const docId = await saveDocument({
             pdfUrl: pdfUrlData.publicUrl,
             txtUrl: ocrJson.txtFileUrl,
@@ -404,14 +466,16 @@ export default function CaseDetailPage() {
         }
       }
 
-      // 선택한 문서에 해당하는 증거기록 분류·분석만 참고용으로 전달 (분석 안 한 섹션은 분류만 포함)
+      // 선택한 문서에 해당하는 증거기록 분류·분석만 참고용으로 전달 (분석 안 한 섹션은 분류만 포함).
+      // document_id를 함께 보내어 API에서도 선택 문서만 사용하도록 이중 필터링.
       const sectionsForSelected = (evidenceSections || []).filter((s) =>
-        ids.includes(s.document_id)
+        s.document_id && ids.includes(s.document_id)
       )
       const evidenceContext =
         sectionsForSelected.length > 0
           ? {
               sections: sectionsForSelected.map((s) => ({
+                document_id: s.document_id,
                 section_title: s.section_title,
                 section_type: s.section_type,
                 start_page: s.start_page,
@@ -459,6 +523,277 @@ export default function CaseDetailPage() {
     const allIds = caseData.documents.map((d) => d.id)
     setSelectedDocs(allIds)
     await analyzeSelected(allIds)
+  }
+
+  /** 다단계 분석: 1차 요약·쟁점 → 2차 타임라인 → 3차 증거·유리한 정황·모순점 (선택 문서만) */
+  async function analyzeSelectedMultistage() {
+    const ids = selectedDocs.length > 0 ? selectedDocs : caseData.documents.map((d) => d.id)
+    if (ids.length === 0) return
+
+    setIsAnalyzingMultistage(true)
+    setIsAnalyzing(true)
+    try {
+      const selectedDocuments = caseData.documents.filter((d) => ids.includes(d.id))
+      const texts = []
+      for (let i = 0; i < selectedDocuments.length; i++) {
+        const doc = selectedDocuments[i]
+        if (!doc.txt_url) continue
+        let pageTexts = null
+        if (doc.txt_file_name) {
+          const timestamp = doc.txt_file_name.replace(/\.txt$/i, '')
+          const pageJsonUrl = doc.txt_url.replace(doc.txt_file_name, `${timestamp}_pages.json`)
+          try {
+            const ptRes = await fetch(pageJsonUrl)
+            if (ptRes.ok) {
+              const pageJson = await ptRes.json()
+              if (pageJson && typeof pageJson === 'object' && Object.keys(pageJson).length > 0) {
+                pageTexts = pageJson
+              }
+            }
+          } catch (_) {}
+        }
+        if (pageTexts) {
+          const pageNumbers = Object.keys(pageTexts)
+            .map((n) => parseInt(n, 10))
+            .filter((n) => !Number.isNaN(n))
+            .sort((a, b) => a - b)
+          const parts = pageNumbers.map(
+            (p) => `[문서 ${i + 1} - ${p}페이지]\n${(pageTexts[String(p)] ?? '').trim()}`
+          )
+          texts.push(parts.join('\n\n'))
+        } else {
+          const res = await fetch(doc.txt_url)
+          const text = await res.text()
+          texts.push(text)
+        }
+      }
+      const sectionsForSelected = (evidenceSections || []).filter(
+        (s) => s.document_id && ids.includes(s.document_id)
+      )
+      const evidenceContext =
+        sectionsForSelected.length > 0
+          ? {
+              sections: sectionsForSelected.map((s) => ({
+                document_id: s.document_id,
+                section_title: s.section_title,
+                section_type: s.section_type,
+                start_page: s.start_page,
+                end_page: s.end_page,
+                extracted_text: s.extracted_text,
+                analysis_result: s.analysis_result ?? null,
+              })),
+            }
+          : null
+
+      const res = await fetch('/api/analyze-integrated-multistage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          texts,
+          documentIds: ids,
+          caseId: caseId,
+          userContext: caseContext,
+          caseType: caseData.case_type,
+          evidenceContext,
+        }),
+      })
+      const data = await res.json()
+
+      if (data.success) {
+        setAnalysisResult(data.analysis)
+        setToast({
+          message: `다단계 분석 완료! (${data.steps}단계)`,
+          type: 'success',
+        })
+        await loadCase()
+      } else {
+        throw new Error(data.error)
+      }
+    } catch (err) {
+      setToast({ message: '다단계 분석 실패: ' + err.message, type: 'error' })
+    } finally {
+      setIsAnalyzingMultistage(false)
+      setIsAnalyzing(false)
+    }
+  }
+
+  /** 구간 나누기 분석용 payload 생성 (1·2·3단계 공통) */
+  async function buildChunkedPayload() {
+    const ids = selectedDocs.length > 0 ? selectedDocs : caseData.documents.map((d) => d.id)
+    if (ids.length === 0) return null
+    const selectedDocuments = caseData.documents.filter((d) => ids.includes(d.id))
+    const sendTextsInBody = ids.length === 1
+    let texts = []
+    if (sendTextsInBody) {
+      for (let i = 0; i < selectedDocuments.length; i++) {
+        const doc = selectedDocuments[i]
+        if (!doc.txt_url) continue
+        let pageTexts = null
+        if (doc.txt_file_name) {
+          const timestamp = doc.txt_file_name.replace(/\.txt$/i, '')
+          const pageJsonUrl = doc.txt_url.replace(doc.txt_file_name, `${timestamp}_pages.json`)
+          try {
+            const ptRes = await fetch(pageJsonUrl)
+            if (ptRes.ok) {
+              const pageJson = await ptRes.json()
+              if (pageJson && typeof pageJson === 'object' && Object.keys(pageJson).length > 0) {
+                pageTexts = pageJson
+              }
+            }
+          } catch (_) {}
+        }
+        if (pageTexts) {
+          const pageNumbers = Object.keys(pageTexts)
+            .map((n) => parseInt(n, 10))
+            .filter((n) => !Number.isNaN(n))
+            .sort((a, b) => a - b)
+          const parts = pageNumbers.map(
+            (p) => `[문서 ${i + 1} - ${p}페이지]\n${(pageTexts[String(p)] ?? '').trim()}`
+          )
+          texts.push(parts.join('\n\n'))
+        } else {
+          const res = await fetch(doc.txt_url)
+          const text = await res.text()
+          texts.push(text)
+        }
+      }
+    }
+    const sectionsForSelected = (evidenceSections || []).filter(
+      (s) => s.document_id && ids.includes(s.document_id)
+    )
+    const evidenceContext =
+      sectionsForSelected.length > 0
+        ? {
+            sections: sectionsForSelected.map((s) => ({
+              document_id: s.document_id,
+              section_title: s.section_title,
+              section_type: s.section_type,
+              start_page: s.start_page,
+              end_page: s.end_page,
+              extracted_text: s.extracted_text,
+              analysis_result: s.analysis_result ?? null,
+            })),
+          }
+        : null
+    const payload = {
+      documentIds: ids,
+      caseId: caseId,
+      userContext: caseContext,
+      caseType: caseData.case_type,
+      evidenceContext,
+    }
+    if (sendTextsInBody && texts.length > 0) payload.texts = texts
+    return payload
+  }
+
+  /** 구간 나누기 1단계: 청크 분할만 (사용자 확인 후 2단계 진행) */
+  async function runChunkedPhase1() {
+    const ids = selectedDocs.length > 0 ? selectedDocs : caseData.documents.map((d) => d.id)
+    if (ids.length === 0) return
+    setIsAnalyzingChunked(true)
+    setIsAnalyzing(true)
+    setChunkedPhase(0)
+    setChunkedPhaseData(null)
+    setChunkedPayload(null)
+    try {
+      const payload = await buildChunkedPayload()
+      if (!payload) throw new Error('분석할 문서가 없습니다.')
+      setChunkedPayload(payload)
+      const res = await fetch('/api/analyze-integrated-chunked', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payload, phase: 1 }),
+      })
+      const data = await res.json().catch(() => ({ error: res.statusText || '서버 오류' }))
+      if (data.error) throw new Error(data.error)
+      if (data.phase !== 1 || data.chunksCount == null) throw new Error('1단계 응답 형식 오류')
+      setChunkedPhaseData({ chunksCount: data.chunksCount, totalPages: data.totalPages })
+      setChunkedPhase(1)
+      setToast({ message: `1단계 완료: ${data.chunksCount}개 구간, 총 ${data.totalPages}페이지`, type: 'success' })
+    } catch (err) {
+      setToast({ message: '1단계 실패: ' + (err?.message || String(err)), type: 'error' })
+    } finally {
+      setIsAnalyzingChunked(false)
+      setIsAnalyzing(false)
+    }
+  }
+
+  /** 구간 나누기 2단계: 부분 분석 (사용자 확인 후 3단계 진행) */
+  async function runChunkedPhase2() {
+    if (!chunkedPayload || chunkedPhase !== 1) return
+    setIsAnalyzingChunked(true)
+    setIsAnalyzing(true)
+    try {
+      const res = await fetch('/api/analyze-integrated-chunked', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...chunkedPayload, phase: 2 }),
+      })
+      const data = await res.json().catch(() => ({ error: res.statusText || '서버 오류' }))
+      if (data.error) throw new Error(data.error)
+      if (data.phase !== 2 || !Array.isArray(data.partialResults)) throw new Error('2단계 응답 형식 오류')
+      setChunkedPhaseData({
+        chunksCount: data.chunksCount,
+        totalPages: data.totalPages,
+        partialResults: data.partialResults,
+      })
+      setChunkedPhase(2)
+      setToast({
+        message: `2단계 완료: 부분 분석 ${data.partialResults.length}개 구간 완료`,
+        type: 'success',
+      })
+    } catch (err) {
+      setToast({ message: '2단계 실패: ' + (err?.message || String(err)), type: 'error' })
+    } finally {
+      setIsAnalyzingChunked(false)
+      setIsAnalyzing(false)
+    }
+  }
+
+  /** 구간 나누기 3단계: 종합만 (partialResults 전달) */
+  async function runChunkedPhase3() {
+    if (!chunkedPayload || chunkedPhase !== 2 || !chunkedPhaseData?.partialResults) return
+    setIsAnalyzingChunked(true)
+    setIsAnalyzing(true)
+    try {
+      const res = await fetch('/api/analyze-integrated-chunked', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...chunkedPayload,
+          phase: 3,
+          partialResults: chunkedPhaseData.partialResults,
+        }),
+      })
+      const data = await res.json().catch(() => ({ error: res.statusText || '서버 오류' }))
+      if (data.error) throw new Error(data.error)
+      if (!data.analysis) throw new Error('3단계 응답 형식 오류')
+      setAnalysisResult(data.analysis)
+      setChunkedPhase(0)
+      setChunkedPhaseData(null)
+      setChunkedPayload(null)
+      setToast({
+        message: `구간 나누기 분석 완료! (${data.chunksUsed}구간)`,
+        type: 'success',
+      })
+      await loadCase()
+    } catch (err) {
+      setToast({ message: '3단계 실패: ' + (err?.message || String(err)), type: 'error' })
+    } finally {
+      setIsAnalyzingChunked(false)
+      setIsAnalyzing(false)
+    }
+  }
+
+  function resetChunkedPhase() {
+    setChunkedPhase(0)
+    setChunkedPhaseData(null)
+    setChunkedPayload(null)
+  }
+
+  /** 구간 나누기 분석: 1단계 시작 (이후 단계별로 사용자가 '다음 단계'로 진행) */
+  async function analyzeSelectedChunked() {
+    await runChunkedPhase1()
   }
 
   async function handleKeywordSearch() {
@@ -703,6 +1038,91 @@ export default function CaseDetailPage() {
       setToast({ message: '엔티티 분석 실패: ' + err.message, type: 'error' })
     } finally {
       setIsEntityAnalyzing(false)
+    }
+  }
+
+  async function handleDownloadReportPdf() {
+    if (!selectedAnalysis?.result) return
+    setPdfDownloading(true)
+    try {
+      const doc = (
+        <AnalysisReportPdf
+          result={selectedAnalysis.result}
+          caseName={caseData?.case_name}
+          analysisTitle={selectedAnalysis.title}
+        />
+      )
+      const blob = await pdf(doc).toBlob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      const safeName = (caseData?.case_name || '사건').replace(/[/\\?%*:|"]/g, '_')
+      a.download = `분석리포트_${safeName}_${Date.now()}.pdf`
+      a.click()
+      URL.revokeObjectURL(url)
+      setToast({ message: '리포트 PDF가 다운로드되었습니다.', type: 'success' })
+    } catch (err) {
+      setToast({ message: 'PDF 생성 실패: ' + (err?.message || err), type: 'error' })
+    } finally {
+      setPdfDownloading(false)
+    }
+  }
+
+  function handleDownloadPrompt(item) {
+    if (!selectedAnalysis?.result) return
+    try {
+      const text = fillTemplate(item.template, selectedAnalysis.result)
+      const blob = new Blob([text], { type: 'text/plain; charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = item.fileName
+      a.click()
+      URL.revokeObjectURL(url)
+      setPromptDownloadOpen(false)
+      setToast({ message: `"${item.title}" 프롬프트가 다운로드되었습니다.`, type: 'success' })
+    } catch (err) {
+      setToast({ message: '프롬프트 생성 실패: ' + (err?.message || err), type: 'error' })
+    }
+  }
+
+  async function runPageVerification() {
+    if (!selectedAnalysis?.result || !caseData?.documents?.length) return
+    const docIds =
+      selectedAnalysis.result?.document_ids ??
+      (selectedAnalysis.document_id ? [selectedAnalysis.document_id] : caseData.documents.map((d) => d.id))
+    const selectedDocuments = caseData.documents.filter((d) => docIds.includes(d.id))
+    if (selectedDocuments.length === 0) return
+
+    setVerificationLoading(true)
+    setAnalysisVerification(null)
+    try {
+      const pageTextsByDoc = []
+      for (const doc of selectedDocuments) {
+        if (!doc.txt_url || !doc.txt_file_name) continue
+        const timestamp = doc.txt_file_name.replace(/\.txt$/i, '')
+        const pageJsonUrl = doc.txt_url.replace(doc.txt_file_name, `${timestamp}_pages.json`)
+        try {
+          const res = await fetch(pageJsonUrl)
+          if (!res.ok) continue
+          const pageJson = await res.json()
+          if (pageJson && typeof pageJson === 'object' && Object.keys(pageJson).length > 0) {
+            pageTextsByDoc.push({ documentId: doc.id, pageTexts: pageJson })
+          }
+        } catch (_) {}
+      }
+      if (pageTextsByDoc.length === 0) {
+        setToast({ message: '페이지별 텍스트(_pages.json)를 불러올 수 없습니다. OCR 업로드 문서만 검증 가능합니다.', type: 'error' })
+        return
+      }
+      const verification = verifyAnalysisPages(selectedAnalysis.result, pageTextsByDoc)
+      setAnalysisVerification(verification)
+      const summary = verificationSummary(verification)
+      setToast({ message: summary ? `페이지 검증 완료: ${summary}` : '페이지 검증 완료', type: 'success' })
+    } catch (err) {
+      setToast({ message: '검증 실패: ' + (err?.message || err), type: 'error' })
+    } finally {
+      setVerificationLoading(false)
     }
   }
 
@@ -1066,7 +1486,7 @@ export default function CaseDetailPage() {
             <input
               ref={fileInputRef}
               type="file"
-              accept="application/pdf,.pdf"
+              accept="application/pdf,.pdf,.hwp,application/x-hwp,.hwpx,application/hwpx"
               multiple
               className="hidden"
               onChange={handleFileChange}
@@ -1077,7 +1497,7 @@ export default function CaseDetailPage() {
               disabled={isUploading}
               className="px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
             >
-              PDF 선택
+              PDF / 한글(HWP·HWPX) 선택
             </button>
 
             {selectedFiles.length > 0 && (
@@ -1209,7 +1629,7 @@ export default function CaseDetailPage() {
               <EmptyState
                 icon="📄"
                 title="문서가 없습니다"
-                description="PDF 파일을 업로드하여 AI 분석을 시작하세요."
+                description="PDF 또는 한글(HWP·HWPX) 파일을 업로드하여 AI 분석을 시작하세요."
               />
             ) : (
               <>
@@ -1290,15 +1710,15 @@ export default function CaseDetailPage() {
                   </span>
                 </div>
 
-                <div className="flex gap-3">
+                <div className="flex flex-wrap gap-3">
                   <button
                     onClick={() => analyzeSelected()}
                     disabled={
                       selectedDocs.length === 0 || isAnalyzing
                     }
-                    className="flex-1 px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="flex-1 min-w-[140px] px-6 py-3 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {isAnalyzing
+                    {isAnalyzing && !isAnalyzingMultistage
                       ? '분석 중...'
                       : `선택한 문서 분석 (${selectedDocs.length}개)`}
                   </button>
@@ -1307,17 +1727,107 @@ export default function CaseDetailPage() {
                     disabled={
                       caseData.documents.length === 0 || isAnalyzing
                     }
-                    className="flex-1 px-6 py-3 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="flex-1 min-w-[140px] px-6 py-3 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {isAnalyzing
+                    {isAnalyzing && !isAnalyzingMultistage
                       ? '분석 중...'
                       : `전체 문서 분석 (${caseData.documents.length}개)`}
+                  </button>
+                  <button
+                    onClick={analyzeSelectedMultistage}
+                    disabled={
+                      (selectedDocs.length === 0 && caseData.documents.length === 0) || isAnalyzing
+                    }
+                    className="flex-1 min-w-[140px] px-6 py-3 bg-violet-600 text-white rounded-md hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="1단계 요약·쟁점 → 2단계 타임라인 → 3단계 증거·유리한 정황·모순점 (품질 강화)"
+                  >
+                    {isAnalyzingMultistage
+                      ? '다단계 분석 중...'
+                      : `다단계 분석 (${selectedDocs.length > 0 ? selectedDocs.length : caseData.documents.length}개)`}
+                  </button>
+                  <button
+                    onClick={analyzeSelectedChunked}
+                    disabled={
+                      (selectedDocs.length === 0 && caseData.documents.length === 0) || isAnalyzing
+                    }
+                    className="flex-1 min-w-[140px] px-6 py-3 bg-amber-600 text-white rounded-md hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="50페이지씩 구간 분석 후 종합 (50페이지 넘는 긴 문서 품질 향상)"
+                  >
+                    {isAnalyzingChunked
+                      ? '구간 분석 중...'
+                      : `구간 나누기 분석 (${selectedDocs.length > 0 ? selectedDocs.length : caseData.documents.length}개)`}
                   </button>
                 </div>
 
                 {isAnalyzing && (
                   <div className="mt-6">
-                    <LoadingSpinner text="AI가 문서를 분석하고 있습니다..." />
+                    <LoadingSpinner
+                      text={
+                        isAnalyzingMultistage
+                          ? '다단계 분석 중... (1단계 요약·쟁점 → 2단계 타임라인 → 3단계 증거·모순점, 약 1~2분)'
+                          : isAnalyzingChunked
+                            ? '구간 나누기 분석 중... (50페이지씩 부분 분석 후 종합, 약 2~3분)'
+                            : 'AI가 문서를 분석하고 있습니다...'
+                      }
+                    />
+                  </div>
+                )}
+
+                {chunkedPhase >= 1 && !isAnalyzing && (
+                  <div className="mt-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                    <h3 className="font-medium text-amber-900 mb-2">
+                      구간 나누기 분석 — {chunkedPhase === 1 ? '1단계 완료' : '2단계 완료'}
+                    </h3>
+                    {chunkedPhase === 1 && chunkedPhaseData && (
+                      <>
+                        <p className="text-sm text-amber-800 mb-3">
+                          {chunkedPhaseData.chunksCount}개 구간, 총 {chunkedPhaseData.totalPages}페이지로 분할되었습니다.
+                          결과를 확인한 뒤 다음 단계를 진행하세요.
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={runChunkedPhase2}
+                            disabled={isAnalyzing}
+                            className="px-4 py-2 bg-amber-600 text-white rounded-md hover:bg-amber-700 disabled:opacity-50"
+                          >
+                            2단계 진행 (부분 분석)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={resetChunkedPhase}
+                            className="px-4 py-2 bg-zinc-200 text-zinc-700 rounded-md hover:bg-zinc-300"
+                          >
+                            처음부터
+                          </button>
+                        </div>
+                      </>
+                    )}
+                    {chunkedPhase === 2 && chunkedPhaseData?.partialResults && (
+                      <>
+                        <p className="text-sm text-amber-800 mb-3">
+                          부분 분석 {chunkedPhaseData.partialResults.length}개 구간이 완료되었습니다.
+                          다음 단계에서 종합하여 최종 분석을 생성합니다.
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={runChunkedPhase3}
+                            disabled={isAnalyzing}
+                            className="px-4 py-2 bg-amber-600 text-white rounded-md hover:bg-amber-700 disabled:opacity-50"
+                          >
+                            3단계 진행 (종합)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={resetChunkedPhase}
+                            className="px-4 py-2 bg-zinc-200 text-zinc-700 rounded-md hover:bg-zinc-300"
+                          >
+                            처음부터
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
               </>
@@ -1678,6 +2188,11 @@ export default function CaseDetailPage() {
                           selectedAnalysis.created_at
                         ).toLocaleString('ko-KR')}
                       </p>
+                      {analysisVerification && (
+                        <p className="text-xs text-green-700 mt-1">
+                          페이지 검증: {verificationSummary(analysisVerification)}
+                        </p>
+                      )}
                     </div>
                     <div className="flex gap-2">
                       {isMarkedAsGood ? (
@@ -1773,6 +2288,46 @@ export default function CaseDetailPage() {
                           취소
                         </button>
                       )}
+                      <button
+                        type="button"
+                        onClick={handleDownloadReportPdf}
+                        disabled={pdfDownloading}
+                        className="px-4 py-2 text-sm bg-slate-600 text-white rounded-md hover:bg-slate-700 disabled:opacity-50"
+                      >
+                        {pdfDownloading ? 'PDF 생성 중...' : '리포트 PDF 다운로드'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={runPageVerification}
+                        disabled={verificationLoading}
+                        className="px-4 py-2 text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700 disabled:opacity-50"
+                        title="분석 결과의 페이지 번호가 원문 범위·내용과 맞는지 검증"
+                      >
+                        {verificationLoading ? '검증 중...' : '페이지 검증'}
+                      </button>
+                      <div className="relative" ref={promptDownloadRef}>
+                        <button
+                          type="button"
+                          onClick={() => setPromptDownloadOpen((v) => !v)}
+                          className="px-4 py-2 text-sm bg-slate-500 text-white rounded-md hover:bg-slate-600"
+                        >
+                          프롬프트 다운로드 ▾
+                        </button>
+                        {promptDownloadOpen && (
+                          <div className="absolute top-full left-0 mt-1 py-1 bg-white border border-zinc-200 rounded-md shadow-lg z-10 min-w-[200px]">
+                            {getPromptTemplates().map((item) => (
+                              <button
+                                key={item.id}
+                                type="button"
+                                onClick={() => handleDownloadPrompt(item)}
+                                className="block w-full text-left px-4 py-2 text-sm text-zinc-800 hover:bg-zinc-100"
+                              >
+                                {item.title}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                       <button
                         type="button"
                         onClick={runEntityAnalysis}
@@ -1881,7 +2436,7 @@ export default function CaseDetailPage() {
                               <div className="flex-1 min-w-0">
                                 <span className="text-zinc-700">{ev.description}</span>
                                 {ev.page != null && (
-                                  <div className="text-xs mt-0.5">
+                                  <div className="text-xs mt-0.5 flex items-center gap-1">
                                     <button
                                       type="button"
                                       onClick={() => openAnalysisPdf(ev.page, null)}
@@ -1889,6 +2444,23 @@ export default function CaseDetailPage() {
                                     >
                                       📄 p.{ev.page}
                                     </button>
+                                    {analysisVerification?.evidence?.[i] != null && (
+                                      <span
+                                        title={
+                                          analysisVerification.evidence[i].inRange && analysisVerification.evidence[i].contentMatch
+                                            ? '원문 범위·내용 확인됨'
+                                            : analysisVerification.evidence[i].inRange
+                                              ? '범위 내, 원문 내용 미확인'
+                                              : '페이지 범위 밖이거나 원문 없음'
+                                        }
+                                      >
+                                        {analysisVerification.evidence[i].inRange && analysisVerification.evidence[i].contentMatch ? (
+                                          <span className="text-green-600">✅</span>
+                                        ) : (
+                                          <span className="text-amber-600">⚠️</span>
+                                        )}
+                                      </span>
+                                    )}
                                   </div>
                                 )}
                                 {ev.note && (
@@ -1911,7 +2483,9 @@ export default function CaseDetailPage() {
                       {editingAnalysis ? (
                         <textarea
                           value={
-                            editedAnalysis?.favorable_facts?.join('\n') || ''
+                            (editedAnalysis?.favorable_facts || [])
+                              .map((f) => (typeof f === 'object' && f?.fact != null ? f.fact : String(f)))
+                              .join('\n') || ''
                           }
                           onChange={(e) =>
                             setEditedAnalysis({
@@ -1927,12 +2501,25 @@ export default function CaseDetailPage() {
                         />
                       ) : (
                         <ul className="list-disc list-inside space-y-1">
-                          {selectedAnalysis.result?.favorable_facts?.map(
-                            (fact, i) => (
-                              <li key={i} className="text-zinc-700">
-                                {fact}
-                              </li>
-                            )
+                          {(selectedAnalysis.result?.favorable_facts || []).map(
+                            (fact, i) => {
+                              const text = typeof fact === 'object' && fact?.fact != null ? fact.fact : String(fact)
+                              const page = typeof fact === 'object' ? fact?.page : null
+                              return (
+                                <li key={i} className="text-zinc-700 flex items-center gap-2 flex-wrap">
+                                  <span>{text}</span>
+                                  {page != null && (
+                                    <button
+                                      type="button"
+                                      onClick={() => openAnalysisPdf(page, null)}
+                                      className="text-sm text-blue-600 hover:underline"
+                                    >
+                                      p.{page}
+                                    </button>
+                                  )}
+                                </li>
+                              )
+                            }
                           )}
                         </ul>
                       )}
@@ -1959,6 +2546,7 @@ export default function CaseDetailPage() {
                           <Timeline
                             events={selectedAnalysis.result?.timeline}
                             onPageClick={openAnalysisPdf}
+                            pageVerification={analysisVerification?.timeline}
                           />
                         )}
                       </div>

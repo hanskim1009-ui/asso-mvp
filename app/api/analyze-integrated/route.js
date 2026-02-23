@@ -71,12 +71,17 @@ export async function POST(request) {
       systemPrompt += `\n\n중점 검토 사항:\n${userContext.focus_areas}`
     }
 
-    // 증거기록 분류·분석 참고 자료 (있을 때만). 분류는 모두, 분석은 있는 것만 포함.
+    // 증거기록 분류·분석 참고 자료 (있을 때만). 선택한 문서(documentIds)에 속한 섹션만 사용.
     let evidenceReferenceBlock = ''
-    if (evidenceContext?.sections?.length > 0) {
+    const evidenceSectionsRaw = evidenceContext?.sections ?? []
+    const allowedDocIds = Array.isArray(documentIds) && documentIds.length > 0 ? new Set(documentIds) : null
+    const evidenceSectionsFiltered = allowedDocIds
+      ? evidenceSectionsRaw.filter((s) => s.document_id && allowedDocIds.has(s.document_id))
+      : evidenceSectionsRaw
+    if (evidenceSectionsFiltered.length > 0) {
       const MAX_EXTRACT_PER_SECTION = 2500
       evidenceReferenceBlock = `\n\n아래는 이미 증거기록으로 분류된 내용과, 분석이 완료된 섹션의 분석 결과입니다. 통합 분석 시 이를 참고하되, 다음에 나오는 수사기록 원문과 상호보완하여 작성하세요. (분석이 없는 섹션은 분류 정보만 참고)\n\n`
-      evidenceContext.sections.forEach((s, idx) => {
+      evidenceSectionsFiltered.forEach((s, idx) => {
         evidenceReferenceBlock += `--- 증거 섹션 ${idx + 1}: ${s.section_title || s.section_type} (유형: ${s.section_type}, p.${s.start_page}-${s.end_page}) ---\n`
         if (s.extracted_text?.trim()) {
           const excerpt = s.extracted_text.length > MAX_EXTRACT_PER_SECTION
@@ -91,18 +96,23 @@ export async function POST(request) {
       evidenceReferenceBlock += '--- 위 증거기록 분류·분석 참고 끝 ---\n\n'
     }
 
+    const evidenceBlockNote = evidenceReferenceBlock
+      ? `\n**참고:** 위 '증거기록 분류·분석 참고' 블록은 이번 분석 대상 문서의 보조 자료입니다. **타임라인과 발견된 모순점(contradictions)은 반드시 아래 '수사기록 원문'에만 나온 내용을 근거로 작성하세요.** 위 참고 블록은 요약·쟁점·증거 목록 보조용이며, 타임라인·모순점 작성 시에는 사용하지 마세요.\n`
+      : ''
+
     const PROMPT = `${systemPrompt}
 
 다음은 여러 수사기록 문서입니다. 이들을 종합적으로 분석하여 JSON 형식으로 반환하세요.
 ${evidenceReferenceBlock ? `\n${evidenceReferenceBlock}` : ''}
+${evidenceBlockNote}
+--- 수사기록 원문 (아래만 타임라인·모순점의 근거로 사용) ---
 
 {{TEXT}}
 
-**중요: 모든 타임라인 이벤트와 증거에는 반드시 페이지 번호를 포함해야 합니다.**
-
-페이지 번호는 다음 순서로 사용하세요.
-1) 원문에 "[문서 N - k페이지]" 표기가 있으면, 해당 구간의 내용은 반드시 page: k 로 참조하세요. 문서에 나온 페이지 번호만 사용하고, 원문에 없는 페이지(예: 33페이지 문서에 34, 35페이지)를 만들지 마세요.
-2) "[문서 N - k페이지]" 표기가 없으면 <footer> 태그의 숫자를 참고하세요.
+**페이지 번호 규칙 (evidence, timeline, favorable_facts 모두 필수):**
+- 원문에 "[문서 N - k페이지]" 표기가 있는 구간은 반드시 해당 k를 page로 사용하세요. 해당 내용이 3페이지에 나오면 page: 3, 5페이지면 page: 5로 쓰세요.
+- 문서에 실제로 존재하는 페이지 번호만 사용하고, 원문에 없는 페이지를 만들지 마세요.
+- "[문서 N - k페이지]" 표기가 없으면 <footer> 숫자를 참고하세요.
 
 반환 형식 (JSON만):
 {
@@ -124,19 +134,21 @@ ${evidenceReferenceBlock ? `\n${evidenceReferenceBlock}` : ''}
     }
   ],
   "favorable_facts": [
-    "유리한 정황 1",
-    "유리한 정황 2"
+    { "fact": "유리한 정황 1", "page": 3 },
+    { "fact": "유리한 정황 2", "page": 5 }
   ],
   "contradictions": [
     {
       "statement_1": "진술 1",
       "statement_2": "진술 2",
-      "analysis": "모순 분석"
+      "analysis": "모순 분석",
+      "statement_1_page": 2,
+      "statement_2_page": 7
     }
   ]
 }
 
-**모든 timeline과 evidence 항목에 page 필드가 필수입니다!**`
+**모든 timeline, evidence 항목에 page 필수. favorable_facts는 { "fact": "내용", "page": k } 형식으로 해당 정황이 나오는 페이지 k를 넣으세요.**`
 
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })

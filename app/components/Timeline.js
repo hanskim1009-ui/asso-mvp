@@ -1,6 +1,6 @@
 "use client"
 
-export default function Timeline({ events, onPageClick }) {
+export default function Timeline({ events, onPageClick, pageVerification }) {
   if (!events || events.length === 0) {
     return (
       <div className="text-center py-8 text-zinc-500">
@@ -9,8 +9,10 @@ export default function Timeline({ events, onPageClick }) {
     )
   }
 
-  // 날짜순 정렬
-  const sortedEvents = [...events].sort((a, b) => {
+  // 원본 인덱스 유지 후 날짜순 정렬
+  const sortedEvents = [...events]
+    .map((e, i) => ({ ...e, _idx: i }))
+    .sort((a, b) => {
     const dateA = new Date(a.date || a.event_date)
     const dateB = new Date(b.date || b.event_date)
     return dateA - dateB
@@ -67,19 +69,39 @@ export default function Timeline({ events, onPageClick }) {
                           📄 {event.source}
                         </span>
                         {event.page != null && (
-                          onPageClick ? (
-                            <button
-                              type="button"
-                              onClick={() => onPageClick(event.page, event.source)}
-                              className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs font-medium hover:bg-blue-200 cursor-pointer"
-                            >
-                              p.{event.page}
-                            </button>
-                          ) : (
-                            <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs font-medium">
-                              p.{event.page}
-                            </span>
-                          )
+                          <span className="flex items-center gap-1">
+                            {onPageClick ? (
+                              <button
+                                type="button"
+                                onClick={() => onPageClick(event.page, event.source)}
+                                className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs font-medium hover:bg-blue-200 cursor-pointer"
+                              >
+                                p.{event.page}
+                              </button>
+                            ) : (
+                              <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs font-medium">
+                                p.{event.page}
+                              </span>
+                            )}
+                            {pageVerification?.[event._idx] != null && (
+                              <span
+                                className="text-xs"
+                                title={
+                                  pageVerification[event._idx].inRange && pageVerification[event._idx].contentMatch
+                                    ? '원문 범위·내용 확인됨'
+                                    : pageVerification[event._idx].inRange
+                                      ? '범위 내, 원문 내용 미확인'
+                                      : '페이지 범위 밖이거나 원문 없음'
+                                }
+                              >
+                                {pageVerification[event._idx].inRange && pageVerification[event._idx].contentMatch ? (
+                                  <span className="text-green-600">✅</span>
+                                ) : (
+                                  <span className="text-amber-600">⚠️</span>
+                                )}
+                              </span>
+                            )}
+                          </span>
                         )}
                       </div>
                     )}
